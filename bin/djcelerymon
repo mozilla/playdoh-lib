@@ -1,0 +1,9 @@
+#!/Users/jeff/.dotfiles/.virtualenvs/bam/bin/python2.6
+# EASY-INSTALL-ENTRY-SCRIPT: 'django-celery==2.1.4','console_scripts','djcelerymon'
+__requires__ = 'django-celery==2.1.4'
+import sys
+from pkg_resources import load_entry_point
+
+sys.exit(
+   load_entry_point('django-celery==2.1.4', 'console_scripts', 'djcelerymon')()
+)
