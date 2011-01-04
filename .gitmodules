@@ -1,6 +1,3 @@
 [submodule "src/django"]
 	path = src/django
 	url = git://github.com/django/django
-[submodule "src/django-sha256"]
-	path = src/django-sha256
-	url = git://github.com/fwenzel/django-sha256.git
