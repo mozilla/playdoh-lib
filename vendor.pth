@@ -2,4 +2,5 @@ src/commonware
 src/django
 src/django-sha2
 src/jingo
+src/tower
 

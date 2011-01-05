@@ -10,3 +10,6 @@
 [submodule "src/jingo"]
 	path = src/jingo
 	url = git://github.com/jbalogh/jingo.git
+[submodule "src/tower"]
+	path = src/tower
+	url = git://github.com/clouserw/tower.git
