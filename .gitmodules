@@ -13,3 +13,6 @@
 [submodule "src/tower"]
 	path = src/tower
 	url = git://github.com/clouserw/tower.git
+[submodule "src/jingo-minify"]
+	path = src/jingo-minify
+	url = git://github.com/jsocol/jingo-minify.git

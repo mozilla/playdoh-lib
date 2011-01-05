@@ -1,6 +1,8 @@
+packages/GitPython/lib
 src/commonware
 src/django
 src/django-sha2
 src/jingo
+src/jingo-minify
 src/tower
 
