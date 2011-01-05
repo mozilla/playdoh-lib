@@ -7,3 +7,6 @@
 [submodule "src/commonware"]
 	path = src/commonware
 	url = git://github.com/jsocol/commonware.git
+[submodule "src/jingo"]
+	path = src/jingo
+	url = git://github.com/jbalogh/jingo.git
