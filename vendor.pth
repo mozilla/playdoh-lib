@@ -4,5 +4,6 @@ src/django
 src/django-sha2
 src/jingo
 src/jingo-minify
+src/schematic
 src/tower
 
