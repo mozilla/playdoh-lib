@@ -7,5 +7,6 @@ src/django-nose
 src/jingo
 src/jingo-minify
 src/schematic
+src/test-utils
 src/tower
 
