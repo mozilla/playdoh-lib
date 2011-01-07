@@ -1,7 +1,9 @@
 packages/GitPython/lib
+packages/nose
 src/commonware
 src/django
 src/django-sha2
+src/django-nose
 src/jingo
 src/jingo-minify
 src/schematic
