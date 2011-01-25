@@ -1,7 +1,3 @@
-packages/Babel
-packages/GitPython/lib
-packages/nose
-packages/translate-toolkit
 src/commonware
 src/django
 src/django-sha2
@@ -11,4 +7,3 @@ src/jingo-minify
 src/schematic
 src/test-utils
 src/tower
-

@@ -1,0 +1,9 @@
+#!/Users/fred/.virtualenvs/playdoh/bin/python2.6
+# EASY-INSTALL-ENTRY-SCRIPT: 'Babel==0.9.5','console_scripts','pybabel'
+__requires__ = 'Babel==0.9.5'
+import sys
+from pkg_resources import load_entry_point
+
+sys.exit(
+   load_entry_point('Babel==0.9.5', 'console_scripts', 'pybabel')()
+)
