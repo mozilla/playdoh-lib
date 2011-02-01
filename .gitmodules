@@ -25,3 +25,6 @@
 [submodule "src/test-utils"]
 	path = src/test-utils
 	url = git://github.com/jbalogh/test-utils.git
+[submodule "src/django-mozilla-product-details"]
+	path = src/django-mozilla-product-details
+	url = git://github.com/fwenzel/django-mozilla-product-details
