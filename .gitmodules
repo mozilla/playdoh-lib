@@ -28,3 +28,6 @@
 [submodule "src/django-mozilla-product-details"]
 	path = src/django-mozilla-product-details
 	url = git://github.com/fwenzel/django-mozilla-product-details
+[submodule "src/nuggets"]
+	path = src/nuggets
+	url = git://github.com/mozilla/nuggets.git
