@@ -3,6 +3,7 @@ src/django
 src/django-mozilla-product-details
 src/django-nose
 src/django-sha2
+src/funfactory
 src/jingo
 src/jingo-minify
 src/nuggets

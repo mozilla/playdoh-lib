@@ -34,3 +34,9 @@
 [submodule "src/bleach"]
 	path = src/bleach
 	url = git://github.com/jsocol/bleach.git
+[submodule "funfactory"]
+	path = funfactory
+	url = git://github.com/mozilla/funfactory.git
+[submodule "src/funfactory"]
+	path = src/funfactory
+	url = git://github.com/mozilla/funfactory.git
