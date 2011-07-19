@@ -40,3 +40,6 @@
 [submodule "src/funfactory"]
 	path = src/funfactory
 	url = git://github.com/mozilla/funfactory.git
+[submodule "src/django-arecibo"]
+	path = src/django-arecibo
+	url = git://github.com/andymckay/django-arecibo.git
