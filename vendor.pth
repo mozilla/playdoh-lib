@@ -12,3 +12,4 @@ src/schematic
 src/test-utils
 src/tower
 src/bleach
+src/django-session-csrf
