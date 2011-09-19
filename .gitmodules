@@ -46,3 +46,6 @@
 [submodule "src/django-session-csrf"]
 	path = src/django-session-csrf
 	url = git://github.com/mozilla/django-session-csrf.git
+[submodule "src/django-mobility"]
+	path = src/django-mobility
+	url = git://github.com/jbalogh/django-mobility.git

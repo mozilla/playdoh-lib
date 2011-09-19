@@ -1,6 +1,7 @@
 src/commonware
 src/django
 src/django-arecibo
+src/django-mobility
 src/django-mozilla-product-details
 src/django-nose
 src/django-sha2
