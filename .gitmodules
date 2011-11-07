@@ -49,3 +49,6 @@
 [submodule "src/django-mobility"]
 	path = src/django-mobility
 	url = git://github.com/jbalogh/django-mobility.git
+[submodule "src/django-multidb-router"]
+	path = src/django-multidb-router
+	url = git://github.com/jbalogh/django-multidb-router.git
