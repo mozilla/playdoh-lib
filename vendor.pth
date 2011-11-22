@@ -14,3 +14,4 @@ src/test-utils
 src/tower
 src/bleach
 src/django-session-csrf
+src/django-multidb-router
