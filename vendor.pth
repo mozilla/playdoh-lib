@@ -1,8 +1,10 @@
 src/commonware
 src/django
 src/django-arecibo
+src/django-cronjobs
 src/django-mobility
 src/django-mozilla-product-details
+src/django-multidb-router
 src/django-nose
 src/django-sha2
 src/funfactory
@@ -14,4 +16,3 @@ src/test-utils
 src/tower
 src/bleach
 src/django-session-csrf
-src/django-multidb-router
