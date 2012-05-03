@@ -1,6 +1,3 @@
-[submodule "src/django"]
-	path = src/django
-	url = git://github.com/django/django
 [submodule "src/django-sha2"]
 	path = src/django-sha2
 	url = git://github.com/fwenzel/django-sha2.git
