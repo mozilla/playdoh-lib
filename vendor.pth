@@ -1,5 +1,4 @@
 src/commonware
-src/django
 src/django-arecibo
 src/django-cronjobs
 src/django-mobility
