@@ -52,3 +52,9 @@
 [submodule "src/django-cronjobs"]
 	path = src/django-cronjobs
 	url = git://github.com/jsocol/django-cronjobs.git
+[submodule "src/django-compressor"]
+	path = src/django-compressor
+	url = git://github.com/jezdez/django_compressor.git
+[submodule "src/django-appconf"]
+	path = src/django-appconf
+	url = git://github.com/jezdez/django-appconf.git

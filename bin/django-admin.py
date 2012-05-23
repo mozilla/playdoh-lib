@@ -1,4 +1,4 @@
-#!/Users/rlr/.virtualenvs/funfactory/bin/python
+#!/usr/bin/env python
 from django.core import management
 
 if __name__ == "__main__":
