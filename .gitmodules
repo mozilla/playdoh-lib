@@ -33,7 +33,7 @@
 	url = git://github.com/jsocol/bleach.git
 [submodule "funfactory"]
 	path = funfactory
-	url = git://github.com/mozilla/funfactory.git
+	url = git://github.com/peterbe/funfactory.git
 [submodule "src/funfactory"]
 	path = src/funfactory
 	url = git://github.com/mozilla/funfactory.git
