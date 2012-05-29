@@ -15,3 +15,5 @@ src/test-utils
 src/tower
 src/bleach
 src/django-session-csrf
+src/django-compressor
+src/django-appconf
