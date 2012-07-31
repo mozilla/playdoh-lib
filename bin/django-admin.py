@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/Users/peterbe/virtualenvs/playdoh/bin/python
 from django.core import management
 
 if __name__ == "__main__":
