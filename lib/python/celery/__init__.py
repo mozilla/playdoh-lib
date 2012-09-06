@@ -1,0 +1,61 @@
+# -*- coding: utf-8 -*-
+"""Distributed Task Queue"""
+# :copyright: (c) 2009 - 2012 Ask Solem and individual contributors,
+#                 All rights reserved.
+# :copyright: (c) 2012 VMware, Inc., All rights reserved.
+# :license:   BSD (3 Clause), see LICENSE for more details.
+
+from __future__ import absolute_import
+
+SERIES = 'Chiastic Slide'
+VERSION = (3, 0, 9)
+__version__ = '.'.join(map(str, VERSION[0:3])) + ''.join(VERSION[3:])
+__author__ = 'Ask Solem'
+__contact__ = 'ask@celeryproject.org'
+__homepage__ = 'http://celeryproject.org'
+__docformat__ = 'restructuredtext'
+__all__ = [
+    'Celery', 'bugreport', 'shared_task', 'Task',
+    'current_app', 'current_task',
+    'chain', 'chord', 'chunks', 'group', 'subtask',
+    'xmap', 'xstarmap', 'uuid', 'VERSION', '__version__',
+]
+VERSION_BANNER = '%s (%s)' % (__version__, SERIES)
+
+# -eof meta-
+
+# This is for static analyzers
+Celery = object
+bugreport = lambda *a, **kw: None
+shared_task = lambda *a, **kw: None
+Task = object
+current_app = object()
+current_task = object()
+chain = lambda *a, **kw: None
+chord = lambda *a, **kw: None
+chunks = lambda *a, **kw: None
+group = lambda *a, **kw: None
+subtask = lambda *a, **kw: None
+xmap = lambda *a, **kw: None
+xstarmap = lambda *a, **kw: None
+uuid = lambda: None
+
+# Lazy loading
+from .__compat__ import recreate_module
+
+old_module, new_module = recreate_module(__name__,  # pragma: no cover
+    by_module={
+        'celery.app':      ['Celery', 'bugreport', 'shared_task'],
+        'celery.app.task': ['Task'],
+        'celery._state':   ['current_app', 'current_task'],
+        'celery.canvas':   ['chain', 'chord', 'chunks', 'group',
+                            'subtask', 'xmap', 'xstarmap'],
+        'celery.utils':    ['uuid'],
+    },
+    direct={'task': 'celery.task'},
+    __package__='celery', __file__=__file__,
+    __path__=__path__, __doc__=__doc__, __version__=__version__,
+    __author__=__author__, __contact__=__contact__,
+    __homepage__=__homepage__, __docformat__=__docformat__,
+    VERSION=VERSION, SERIES=SERIES, VERSION_BANNER=VERSION_BANNER,
+)
