@@ -1,29 +1,26 @@
+# -*- coding: utf-8 -*-
 """Signal class."""
+from __future__ import absolute_import
 
 import weakref
-try:
-    set
-except NameError:
-    from sets import Set as set                     # Python 2.3 fallback
-
-from celery.utils.dispatch import saferef
+from . import saferef
 
 WEAKREF_TYPES = (weakref.ReferenceType, saferef.BoundMethodWeakref)
 
 
-def _make_id(target):
+def _make_id(target):  # pragma: no cover
     if hasattr(target, 'im_func'):
         return (id(target.im_self), id(target.im_func))
     return id(target)
 
 
-class Signal(object):
+class Signal(object):  # pragma: no cover
     """Base class for all signals
 
 
     .. attribute:: receivers
         Internal attribute, holds a dictionary of
-        ``{receriverkey (id): weakref(receiver)}`` mappings.
+        `{receriverkey (id): weakref(receiver)}` mappings.
 
     """
 
@@ -39,7 +36,7 @@ class Signal(object):
             providing_args = []
         self.providing_args = set(providing_args)
 
-    def connect(self, receiver, sender=None, weak=True, dispatch_uid=None):
+    def connect(self, *args, **kwargs):
         """Connect receiver to sender for signal.
 
         :param receiver: A function or an instance method which is to
@@ -51,9 +48,9 @@ class Signal(object):
 
             Receivers must be able to accept keyword arguments.
 
-            If receivers have a ``dispatch_uid`` attribute, the receiver will
+            If receivers have a `dispatch_uid` attribute, the receiver will
             not be added if another receiver already exists with that
-            ``dispatch_uid``.
+            `dispatch_uid`.
 
         :keyword sender: The sender to which the receiver should respond.
             Must either be of type :class:`Signal`, or :const:`None` to receive
@@ -69,20 +66,33 @@ class Signal(object):
             string, though it may be anything hashable.
 
         """
-        if dispatch_uid:
-            lookup_key = (dispatch_uid, _make_id(sender))
-        else:
-            lookup_key = (_make_id(receiver), _make_id(sender))
+        def _handle_options(sender=None, weak=True, dispatch_uid=None):
 
-        if weak:
-            receiver = saferef.safe_ref(receiver,
-                                        on_delete=self._remove_receiver)
+            def _connect_signal(fun):
+                receiver = fun
 
-        for r_key, _ in self.receivers:
-            if r_key == lookup_key:
-                break
-        else:
-            self.receivers.append((lookup_key, receiver))
+                if dispatch_uid:
+                    lookup_key = (dispatch_uid, _make_id(sender))
+                else:
+                    lookup_key = (_make_id(receiver), _make_id(sender))
+
+                if weak:
+                    receiver = saferef.safe_ref(receiver,
+                                    on_delete=self._remove_receiver)
+
+                for r_key, _ in self.receivers:
+                    if r_key == lookup_key:
+                        break
+                else:
+                    self.receivers.append((lookup_key, receiver))
+
+                return fun
+
+            return _connect_signal
+
+        if args and callable(args[0]):
+            return _handle_options(*args[1:], **kwargs)(args[0])
+        return _handle_options(*args, **kwargs)
 
     def disconnect(self, receiver=None, sender=None, weak=True,
             dispatch_uid=None):
@@ -92,7 +102,7 @@ class Signal(object):
         receiver will be removed from dispatch automatically.
 
         :keyword receiver: The registered receiver to disconnect. May be
-            none if ``dispatch_uid`` is specified.
+            none if `dispatch_uid` is specified.
 
         :keyword sender: The registered sender to disconnect.
 
@@ -125,7 +135,7 @@ class Signal(object):
 
         :keyword \*\*named: Named arguments which will be passed to receivers.
 
-        :returns: a list of tuple pairs: ``[(receiver, response), ... ]``.
+        :returns: a list of tuple pairs: `[(receiver, response), ... ]`.
 
         """
         responses = []
@@ -148,7 +158,7 @@ class Signal(object):
             These arguments must be a subset of the argument names defined in
             :attr:`providing_args`.
 
-        :returns: a list of tuple pairs: ``[(receiver, response), ... ]``.
+        :returns: a list of tuple pairs: `[(receiver, response), ... ]`.
 
         :raises DispatcherKeyError:
 

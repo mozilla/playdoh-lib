@@ -1,6 +1,10 @@
+from __future__ import absolute_import
+
 from django.test import Client
 from django.core.handlers.wsgi import WSGIRequest
 from django.core.handlers.base import BaseHandler
+
+from celery.utils.compat import WhateverIO
 
 
 class RequestFactory(Client):
@@ -34,6 +38,7 @@ class RequestFactory(Client):
             'SERVER_NAME': 'testserver',
             'SERVER_PORT': 80,
             'SERVER_PROTOCOL': 'HTTP/1.1',
+            'wsgi.input': WhateverIO(),
         }
 
         environ.update(self.defaults)

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 =========================
 Abortable tasks overview
@@ -28,11 +29,13 @@ In the consumer:
 .. code-block:: python
 
    from celery.contrib.abortable import AbortableTask
+   from celery.utils.log import get_task_logger
 
-   def MyLongRunningTask(AbortableTask):
+   logger = get_logger(__name__)
+
+   class MyLongRunningTask(AbortableTask):
 
        def run(self, **kwargs):
-           logger = self.get_logger(**kwargs)
            results = []
            for x in xrange(100):
                # Check after every 5 loops..
@@ -40,11 +43,11 @@ In the consumer:
                    if self.is_aborted(**kwargs):
                        # Respect the aborted status and terminate
                        # gracefully
-                       logger.warning("Task aborted.")
-                       return None
+                       logger.warning('Task aborted.')
+                       return
                y = do_something_expensive(x)
                results.append(y)
-           logger.info("Task finished.")
+           logger.info('Task finished.')
            return results
 
 
@@ -65,9 +68,9 @@ In the producer:
 
        ...
 
-After the ``async_result.abort()`` call, the task execution is not
+After the `async_result.abort()` call, the task execution is not
 aborted immediately. In fact, it is not guaranteed to abort at all. Keep
-checking the ``async_result`` status, or call ``async_result.wait()`` to
+checking the `async_result` status, or call `async_result.wait()` to
 have it block until the task is finished.
 
 .. note::
@@ -78,6 +81,8 @@ have it block until the task is finished.
    database backends.
 
 """
+from __future__ import absolute_import
+
 from celery.task.base import Task
 from celery.result import AsyncResult
 
@@ -95,20 +100,20 @@ Task is aborted (typically by the producer) and should be
 aborted as soon as possible.
 
 """
-ABORTED = "ABORTED"
+ABORTED = 'ABORTED'
 
 
 class AbortableAsyncResult(AsyncResult):
     """Represents a abortable result.
 
-    Specifically, this gives the ``AsyncResult`` a :meth:`abort()` method,
-    which sets the state of the underlying Task to ``"ABORTED"``.
+    Specifically, this gives the `AsyncResult` a :meth:`abort()` method,
+    which sets the state of the underlying Task to `'ABORTED'`.
 
     """
 
     def is_aborted(self):
         """Returns :const:`True` if the task is (being) aborted."""
-        return self.backend.get_status(self.task_id) == ABORTED
+        return self.state == ABORTED
 
     def abort(self):
         """Set the state of the task to :const:`ABORTED`.
@@ -123,7 +128,7 @@ class AbortableAsyncResult(AsyncResult):
         """
         # TODO: store_result requires all four arguments to be set,
         # but only status should be updated here
-        return self.backend.store_result(self.task_id, result=None,
+        return self.backend.store_result(self.id, result=None,
                                          status=ABORTED, traceback=None)
 
 
@@ -155,7 +160,8 @@ class AbortableTask(Task):
         often (for performance).
 
         """
-        result = self.AsyncResult(kwargs["task_id"])
+        task_id = kwargs.get('task_id', self.request.id)
+        result = self.AsyncResult(task_id)
         if not isinstance(result, AbortableAsyncResult):
             return False
         return result.is_aborted()

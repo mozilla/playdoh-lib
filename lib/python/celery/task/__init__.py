@@ -1,82 +1,59 @@
+# -*- coding: utf-8 -*-
 """
+    celery.task
+    ~~~~~~~~~~~
 
-Working with tasks and task sets.
+    This is the old task module, it should not be used anymore,
+    import from the main 'celery' module instead.
+    If you're looking for the decorator implementation then that's in
+    ``celery.app.base.Celery.task``.
 
 """
+from __future__ import absolute_import
 
-from celery.execute import apply_async
-from celery.registry import tasks
-from celery.serialization import pickle
-from celery.task.base import Task, PeriodicTask
-from celery.task.sets import TaskSet
-from celery.task.builtins import PingTask, ExecuteRemoteTask
-from celery.task.builtins import AsynchronousMapTask, _dmap
-from celery.task.control import discard_all
-from celery.task.http import HttpDispatchTask
+from celery._state import current_app, current_task as current
+from celery.__compat__ import MagicModule, recreate_module
+from celery.local import Proxy
 
-__all__ = ["Task", "TaskSet", "PeriodicTask", "tasks", "discard_all",
-           "dmap", "dmap_async", "execute_remote", "ping", "HttpDispatchTask"]
+__all__ = [
+    'BaseTask', 'Task', 'PeriodicTask',
+    'task', 'periodic_task',
+    'group', 'chord', 'subtask', 'TaskSet',
+]
 
-
-def dmap(fun, args, timeout=None):
-    """Distribute processing of the arguments and collect the results.
-
-    Example
-
-        >>> from celery.task import dmap
-        >>> import operator
-        >>> dmap(operator.add, [[2, 2], [4, 4], [8, 8]])
-        [4, 8, 16]
-
-    """
-    return _dmap(fun, args, timeout)
+# This is for static analyzers
+BaseTask = object
+Task = object
+PeriodicTask = object
+task = lambda *a, **kw: None
+periodic_task = lambda *a, **kw: None
+group = lambda *a, **kw: None
+chord = lambda *a, **kw: None
+subtask = lambda *a, **kw: None
+TaskSet = object
 
 
-def dmap_async(fun, args, timeout=None):
-    """Distribute processing of the arguments and collect the results
-    asynchronously.
+class module(MagicModule):
 
-    :returns :class:`celery.result.AsyncResult`:
-
-    Example
-
-        >>> from celery.task import dmap_async
-        >>> import operator
-        >>> presult = dmap_async(operator.add, [[2, 2], [4, 4], [8, 8]])
-        >>> presult
-        <AsyncResult: 373550e8-b9a0-4666-bc61-ace01fa4f91d>
-        >>> presult.status
-        'SUCCESS'
-        >>> presult.result
-        [4, 8, 16]
-
-    """
-    return AsynchronousMapTask.delay(pickle.dumps(fun), args, timeout=timeout)
+    def __call__(self, *args, **kwargs):
+        return self.task(*args, **kwargs)
 
 
-def execute_remote(fun, *args, **kwargs):
-    """Execute arbitrary function/object remotely.
-
-    :param fun: A callable function or object.
-    :param \*args: Positional arguments to apply to the function.
-    :param \*\*kwargs: Keyword arguments to apply to the function.
-
-    The object must be picklable, so you can't use lambdas or functions
-    defined in the REPL (the objects must have an associated module).
-
-    :returns class:`celery.result.AsyncResult`:
-
-    """
-    return ExecuteRemoteTask.delay(pickle.dumps(fun), args, kwargs)
-
-
-def ping():
-    """Test if the server is alive.
-
-    Example:
-
-        >>> from celery.task import ping
-        >>> ping()
-        'pong'
-    """
-    return PingTask.apply_async().get()
+old_module, new_module = recreate_module(__name__,  # pragma: no cover
+    by_module={
+        'celery.task.base':   ['BaseTask', 'Task', 'PeriodicTask',
+                               'task', 'periodic_task'],
+        'celery.canvas':      ['chain', 'group', 'chord', 'subtask'],
+        'celery.task.sets':   ['TaskSet'],
+    },
+    base=module,
+    __package__='celery.task',
+    __file__=__file__,
+    __path__=__path__,
+    __doc__=__doc__,
+    current=current,
+    discard_all=Proxy(lambda: current_app.control.purge),
+    backend_cleanup=Proxy(
+        lambda: current_app.tasks['celery.backend_cleanup']
+    ),
+)

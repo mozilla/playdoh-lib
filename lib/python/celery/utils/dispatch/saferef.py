@@ -1,15 +1,17 @@
+# -*- coding: utf-8 -*-
 """
 "Safe weakrefs", originally from pyDispatcher.
 
 Provides a way to safely weakref any function, including bound methods (which
 aren't handled by the core weakref module).
 """
+from __future__ import absolute_import
 
 import weakref
 import traceback
 
 
-def safe_ref(target, on_delete=None):
+def safe_ref(target, on_delete=None):  # pragma: no cover
     """Return a *safe* weak reference to a callable target
 
     :param target: the object to be weakly referenced, if it's a
@@ -35,7 +37,7 @@ def safe_ref(target, on_delete=None):
         return weakref.ref(target)
 
 
-class BoundMethodWeakref(object):
+class BoundMethodWeakref(object):  # pragma: no cover
     """'Safe' and reusable weak references to instance methods.
 
     BoundMethodWeakref objects provide a mechanism for
@@ -72,7 +74,7 @@ class BoundMethodWeakref(object):
 
         class attribute pointing to all live
         BoundMethodWeakref objects indexed by the class's
-        ``calculate_key(target)`` method applied to the target
+        `calculate_key(target)` method applied to the target
         objects. This weak value dictionary is used to
         short-circuit creation so that multiple references
         to the same (object, function) pair produce the
@@ -110,7 +112,7 @@ class BoundMethodWeakref(object):
         """Return a weak-reference-like instance for a bound method
 
         :param target: the instance-method target for the weak
-            reference, must have ``im_self`` and ``im_func`` attributes
+            reference, must have `im_self` and `im_func` attributes
             and be reconstructable via::
 
                 target.im_func.__get__(target.im_self)
@@ -153,7 +155,7 @@ class BoundMethodWeakref(object):
     def calculate_key(cls, target):
         """Calculate the reference key for this reference
 
-        Currently this is a two-tuple of the ``id()``'s of the
+        Currently this is a two-tuple of the `id()`'s of the
         target object and the target function respectively.
         """
         return id(target.im_self), id(target.im_func)
@@ -195,10 +197,9 @@ class BoundMethodWeakref(object):
             function = self.weak_func()
             if function is not None:
                 return function.__get__(target)
-        return None
 
 
-class BoundNonDescriptorMethodWeakref(BoundMethodWeakref):
+class BoundNonDescriptorMethodWeakref(BoundMethodWeakref):  # pragma: no cover
     """A specialized :class:`BoundMethodWeakref`, for platforms where
     instance methods are not descriptors.
 
@@ -223,7 +224,7 @@ class BoundNonDescriptorMethodWeakref(BoundMethodWeakref):
         """Return a weak-reference-like instance for a bound method
 
         :param target: the instance-method target for the weak
-            reference, must have ``im_self`` and ``im_func`` attributes
+            reference, must have `im_self` and `im_func` attributes
             and be reconstructable via::
 
                 target.im_func.__get__(target.im_self)
@@ -266,10 +267,9 @@ class BoundNonDescriptorMethodWeakref(BoundMethodWeakref):
                 # arguments it supports, and pydispatcher needs this
                 # information.
                 return getattr(target, function.__name__)
-        return None
 
 
-def get_bound_method_weakref(target, on_delete):
+def get_bound_method_weakref(target, on_delete):  # pragma: no cover
     """Instantiates the appropiate :class:`BoundMethodWeakRef`, depending
     on the details of the underlying class method implementation."""
     if hasattr(target, '__get__'):

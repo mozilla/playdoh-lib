@@ -3,16 +3,37 @@
 Curses Celery Event Viewer.
 
 """
-from celery.bin.celeryev import run_celeryev, OPTION_LIST
+from __future__ import absolute_import
 
+from celery.bin import celeryev
+
+from djcelery.app import app
 from djcelery.management.base import CeleryCommand
+
+ev = celeryev.EvCommand(app=app)
+
+SS_TRANSPORTS = ["amqplib", "kombu.transport.pyamqplib",
+                 "redis", "kombu.transport.pyredis",
+                 "pika", "kombu.transport.pypika"]
+
+SS_COMPAT = """
+ERROR: Snapshots not currently supported by %s transport.
+Please use one of: %s
+"""
 
 
 class Command(CeleryCommand):
     """Run the celery curses event viewer."""
-    option_list = CeleryCommand.option_list + OPTION_LIST
-    help = 'curses celery event viewer'
+    options = (CeleryCommand.options
+             + ev.get_options()
+             + ev.preload_options)
+    help = "Old alias to the 'celery events command'"
 
     def handle(self, *args, **options):
         """Handle the management command."""
-        run_celeryev(*args, **options)
+        transport = app.conf.BROKER_TRANSPORT or "amqplib"
+        if options["camera"]:
+            if transport not in SS_TRANSPORTS:
+                self.die(SS_COMPAT % (transport,
+                    ", ".join(t for t in SS_TRANSPORTS if "." not in t)))
+        ev.run(*args, **options)

@@ -1,13 +1,26 @@
+# -*- coding: utf-8 -*-
+"""
+    celery.apps.beat
+    ~~~~~~~~~~~~~~~~
+
+    This module is the 'program-version' of :mod:`celery.beat`.
+
+    It does everything necessary to run that module
+    as an actual application, like installing signal handlers
+    and so on.
+
+"""
+from __future__ import absolute_import
+
 import socket
 import sys
-import traceback
 
-from celery import __version__
-from celery import beat
-from celery import platforms
-from celery.utils import get_full_cls_name, info, LOG_LEVELS
-from celery.utils.info import humanize_seconds
-from celery.utils import term
+from celery import VERSION_BANNER, platforms, beat
+from celery.app import app_or_default
+from celery.app.abstract import configurated, from_config
+from celery.utils.imports import qualname
+from celery.utils.log import LOG_LEVELS, get_logger
+from celery.utils.timeutils import humanize_seconds
 
 STARTUP_INFO_FMT = """
 Configuration ->
@@ -19,111 +32,104 @@ Configuration ->
     . maxinterval -> %(hmax_interval)s (%(max_interval)ss)
 """.strip()
 
+logger = get_logger('celery.beat')
 
-class Beat(object):
+
+class Beat(configurated):
     Service = beat.Service
 
-    def __init__(self, loglevel=None, logfile=None, schedule=None,
-            max_interval=None, scheduler_cls=None, defaults=None,
-            socket_timeout=30, redirect_stdouts=None,
-            redirect_stdouts_level=None, **kwargs):
+    app = None
+    loglevel = from_config('log_level')
+    logfile = from_config('log_file')
+    schedule = from_config('schedule_filename')
+    scheduler_cls = from_config('scheduler')
+    redirect_stdouts = from_config()
+    redirect_stdouts_level = from_config()
+
+    def __init__(self, max_interval=None, app=None,
+            socket_timeout=30, pidfile=None, **kwargs):
         """Starts the celerybeat task scheduler."""
+        self.app = app = app_or_default(app or self.app)
+        self.setup_defaults(kwargs, namespace='celerybeat')
 
-        if defaults is None:
-            from celery import conf as defaults
-        self.defaults = defaults
-
-        self.loglevel = loglevel or defaults.CELERYBEAT_LOG_LEVEL
-        self.logfile = logfile or defaults.CELERYBEAT_LOG_FILE
-        self.schedule = schedule or defaults.CELERYBEAT_SCHEDULE_FILENAME
-        self.scheduler_cls = scheduler_cls or defaults.CELERYBEAT_SCHEDULER
         self.max_interval = max_interval
         self.socket_timeout = socket_timeout
-        self.colored = term.colored(enabled=defaults.CELERYD_LOG_COLOR)
-        self.redirect_stdouts = redirect_stdouts or defaults.REDIRECT_STDOUTS
-        self.redirect_stdouts_level = (redirect_stdouts_level or
-                                       defaults.REDIRECT_STDOUTS_LEVEL)
+        self.colored = app.log.colored(self.logfile)
+        self.pidfile = pidfile
 
         if not isinstance(self.loglevel, int):
             self.loglevel = LOG_LEVELS[self.loglevel.upper()]
 
     def run(self):
-        logger = self.setup_logging()
         print(str(self.colored.cyan(
-                    "celerybeat v%s is starting." % __version__)))
+                    'celerybeat v%s is starting.' % VERSION_BANNER)))
         self.init_loader()
         self.set_process_title()
-        self.start_scheduler(logger)
+        self.start_scheduler()
 
     def setup_logging(self):
-        from celery import log
-        handled = log.setup_logging_subsystem(loglevel=self.loglevel,
-                                              logfile=self.logfile)
-        logger = log.get_default_logger(name="celery.beat")
+        handled = self.app.log.setup_logging_subsystem(loglevel=self.loglevel,
+                                                       logfile=self.logfile)
         if self.redirect_stdouts and not handled:
-            log.redirect_stdouts_to_logger(logger,
+            self.app.log.redirect_stdouts_to_logger(logger,
                     loglevel=self.redirect_stdouts_level)
-        return logger
 
-    def start_scheduler(self, logger=None):
+    def start_scheduler(self):
         c = self.colored
-        beat = self.Service(logger=logger,
+        if self.pidfile:
+            platforms.create_pidlock(self.pidfile)
+        beat = self.Service(app=self.app,
                             max_interval=self.max_interval,
                             scheduler_cls=self.scheduler_cls,
                             schedule_filename=self.schedule)
 
-        print(str(c.blue("__    ", c.magenta("-"),
-                  c.blue("    ... __   "), c.magenta("-"),
-                  c.blue("        _\n"),
+        print(str(c.blue('__    ', c.magenta('-'),
+                  c.blue('    ... __   '), c.magenta('-'),
+                  c.blue('        _\n'),
                   c.reset(self.startup_info(beat)))))
+        self.setup_logging()
         if self.socket_timeout:
-            logger.debug("Setting default socket timeout to %r" % (
-                self.socket_timeout))
+            logger.debug('Setting default socket timeout to %r',
+                         self.socket_timeout)
             socket.setdefaulttimeout(self.socket_timeout)
         try:
             self.install_sync_handler(beat)
             beat.start()
         except Exception, exc:
-            logger.critical("celerybeat raised exception: %r\n%s" % (
-                            exc, traceback.format_exc()),
-                            exc_info=sys.exc_info())
+            logger.critical('celerybeat raised exception %s: %r',
+                            exc.__class__, exc,
+                            exc_info=True)
 
     def init_loader(self):
         # Run the worker init handler.
         # (Usually imports task modules and such.)
-        from celery.loaders import current_loader
-        self.loader = current_loader()
-        self.loader.init_worker()
+        self.app.loader.init_worker()
+        self.app.finalize()
 
     def startup_info(self, beat):
         scheduler = beat.get_scheduler(lazy=True)
         return STARTUP_INFO_FMT % {
-            "conninfo": info.format_broker_info(),
-            "logfile": self.logfile or "[stderr]",
-            "loglevel": LOG_LEVELS[self.loglevel],
-            "loader": get_full_cls_name(self.loader.__class__),
-            "scheduler": get_full_cls_name(scheduler.__class__),
-            "scheduler_info": scheduler.info,
-            "hmax_interval": humanize_seconds(beat.max_interval),
-            "max_interval": beat.max_interval,
+            'conninfo': self.app.connection().as_uri(),
+            'logfile': self.logfile or '[stderr]',
+            'loglevel': LOG_LEVELS[self.loglevel],
+            'loader': qualname(self.app.loader),
+            'scheduler': qualname(scheduler),
+            'scheduler_info': scheduler.info,
+            'hmax_interval': humanize_seconds(beat.max_interval),
+            'max_interval': beat.max_interval,
         }
 
     def set_process_title(self):
-        arg_start = "manage" in sys.argv[0] and 2 or 1
-        platforms.set_process_title("celerybeat",
-                               info=" ".join(sys.argv[arg_start:]))
+        arg_start = 'manage' in sys.argv[0] and 2 or 1
+        platforms.set_process_title('celerybeat',
+                               info=' '.join(sys.argv[arg_start:]))
 
     def install_sync_handler(self, beat):
-        """Install a ``SIGTERM`` + ``SIGINT`` handler that saves
+        """Install a `SIGTERM` + `SIGINT` handler that saves
         the celerybeat schedule."""
 
         def _sync(signum, frame):
             beat.sync()
             raise SystemExit()
 
-        platforms.install_signal_handler("SIGTERM", _sync)
-        platforms.install_signal_handler("SIGINT", _sync)
-
-
-def run_celerybeat(*args, **kwargs):
-    return Beat(*args, **kwargs).run()
+        platforms.signals.update(SIGTERM=_sync, SIGINT=_sync)

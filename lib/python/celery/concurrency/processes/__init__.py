@@ -1,136 +1,145 @@
+# -*- coding: utf-8 -*-
 """
+    celery.concurrency.processes
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Process Pools.
+    Pool implementation using :mod:`multiprocessing`.
+
+    We use the billiard fork of multiprocessing which contains
+    numerous improvements.
 
 """
-import sys
-import traceback
+from __future__ import absolute_import
 
-from celery import log
-from celery.datastructures import ExceptionInfo
-from celery.utils.functional import curry
+import os
 
-from celery.concurrency.processes.pool import Pool, RUN
+from billiard import forking_enable
+from billiard.pool import Pool, RUN, CLOSE
+
+from celery import platforms
+from celery import signals
+from celery._state import set_default_app
+from celery.concurrency.base import BasePool
+from celery.task import trace
+
+#: List of signals to reset when a child process starts.
+WORKER_SIGRESET = frozenset(['SIGTERM',
+                             'SIGHUP',
+                             'SIGTTIN',
+                             'SIGTTOU',
+                             'SIGUSR1'])
+
+#: List of signals to ignore when a child process starts.
+WORKER_SIGIGNORE = frozenset(['SIGINT'])
 
 
-def pingback(i):
-    return i
+def process_initializer(app, hostname):
+    """Initializes the process so it can be used to process tasks."""
+    app.set_current()
+    set_default_app(app)
+    trace._tasks = app._tasks  # make sure this optimization is set.
+    platforms.signals.reset(*WORKER_SIGRESET)
+    platforms.signals.ignore(*WORKER_SIGIGNORE)
+    platforms.set_mp_process_title('celeryd', hostname=hostname)
+    # This is for Windows and other platforms not supporting
+    # fork(). Note that init_worker makes sure it's only
+    # run once per process.
+    app.log.setup(int(os.environ.get('CELERY_LOG_LEVEL', 0)),
+                  os.environ.get('CELERY_LOG_FILE') or None,
+                  bool(os.environ.get('CELERY_LOG_REDIRECT', False)),
+                  str(os.environ.get('CELERY_LOG_REDIRECT_LEVEL')))
+    app.loader.init_worker()
+    app.loader.init_worker_process()
+    app.finalize()
+
+    from celery.task.trace import build_tracer
+    for name, task in app.tasks.iteritems():
+        task.__trace__ = build_tracer(name, task, app.loader, hostname)
+    signals.worker_process_init.send(sender=None)
 
 
-class TaskPool(object):
-    """Process Pool for processing tasks in parallel.
-
-    :param limit: see :attr:`limit`.
-    :param logger: see :attr:`logger`.
-
-
-    .. attribute:: limit
-
-        The number of processes that can run simultaneously.
-
-    .. attribute:: logger
-
-        The logger used for debugging.
-
-    """
+class TaskPool(BasePool):
+    """Multiprocessing Pool implementation."""
     Pool = Pool
 
-    def __init__(self, limit, logger=None, initializer=None,
-            maxtasksperchild=None, timeout=None, soft_timeout=None,
-            putlocks=True, initargs=()):
-        self.limit = limit
-        self.logger = logger or log.get_default_logger()
-        self.initializer = initializer
-        self.maxtasksperchild = maxtasksperchild
-        self.timeout = timeout
-        self.soft_timeout = soft_timeout
-        self.putlocks = putlocks
-        self.initargs = initargs
-        self._pool = None
+    requires_mediator = True
+    uses_semaphore = True
 
-    def start(self):
+    def on_start(self):
         """Run the task pool.
 
         Will pre-fork all workers so they're ready to accept tasks.
 
         """
-        self._pool = self.Pool(processes=self.limit,
-                               initializer=self.initializer,
-                               initargs=self.initargs,
-                               timeout=self.timeout,
-                               soft_timeout=self.soft_timeout,
-                               maxtasksperchild=self.maxtasksperchild)
+        forking_enable(self.forking_enable)
+        P = self._pool = self.Pool(processes=self.limit,
+                                   initializer=process_initializer,
+                                   **self.options)
+        self.on_apply = P.apply_async
+        self.on_soft_timeout = P._timeout_handler.on_soft_timeout
+        self.on_hard_timeout = P._timeout_handler.on_hard_timeout
+        self.maintain_pool = P.maintain_pool
+        self.maybe_handle_result = P._result_handler.handle_event
 
-    def stop(self):
+    def did_start_ok(self):
+        return self._pool.did_start_ok()
+
+    def on_stop(self):
         """Gracefully stop the pool."""
-        if self._pool is not None and self._pool._state == RUN:
+        if self._pool is not None and self._pool._state in (RUN, CLOSE):
             self._pool.close()
             self._pool.join()
             self._pool = None
 
-    def terminate(self):
+    def on_terminate(self):
         """Force terminate the pool."""
         if self._pool is not None:
             self._pool.terminate()
             self._pool = None
 
-    def apply_async(self, target, args=None, kwargs=None, callbacks=None,
-            errbacks=None, accept_callback=None, timeout_callback=None,
-            **compat):
-        """Equivalent of the :func:``apply`` built-in function.
+    def on_close(self):
+        if self._pool is not None and self._pool._state == RUN:
+            self._pool.close()
 
-        All ``callbacks`` and ``errbacks`` should complete immediately since
-        otherwise the thread which handles the result will get blocked.
+    def terminate_job(self, pid, signal=None):
+        return self._pool.terminate_job(pid, signal)
 
-        """
-        args = args or []
-        kwargs = kwargs or {}
-        callbacks = callbacks or []
-        errbacks = errbacks or []
+    def grow(self, n=1):
+        return self._pool.grow(n)
 
-        on_ready = curry(self.on_ready, callbacks, errbacks)
-        on_worker_error = curry(self.on_worker_error, errbacks)
+    def shrink(self, n=1):
+        return self._pool.shrink(n)
 
-        self.logger.debug("TaskPool: Apply %s (args:%s kwargs:%s)" % (
-            target, args, kwargs))
+    def restart(self):
+        self._pool.restart()
 
-        return self._pool.apply_async(target, args, kwargs,
-                                      callback=on_ready,
-                                      accept_callback=accept_callback,
-                                      timeout_callback=timeout_callback,
-                                      error_callback=on_worker_error,
-                                      waitforslot=self.putlocks)
+    def _get_info(self):
+        return {'max-concurrency': self.limit,
+                'processes': [p.pid for p in self._pool._pool],
+                'max-tasks-per-child': self._pool._maxtasksperchild,
+                'put-guarded-by-semaphore': self.putlocks,
+                'timeouts': (self._pool.soft_timeout, self._pool.timeout)}
 
-    def on_worker_error(self, errbacks, exc):
-        einfo = ExceptionInfo((exc.__class__, exc, None))
-        [errback(einfo) for errback in errbacks]
+    def init_callbacks(self, **kwargs):
+        for k, v in kwargs.iteritems():
+            setattr(self._pool, k, v)
 
-    def on_ready(self, callbacks, errbacks, ret_value):
-        """What to do when a worker task is ready and its return value has
-        been collected."""
-
-        if isinstance(ret_value, ExceptionInfo):
-            if isinstance(ret_value.exception, (
-                    SystemExit, KeyboardInterrupt)):
-                raise ret_value.exception
-            [self.safe_apply_callback(errback, ret_value)
-                    for errback in errbacks]
-        else:
-            [self.safe_apply_callback(callback, ret_value)
-                    for callback in callbacks]
-
-    def safe_apply_callback(self, fun, *args):
-        try:
-            fun(*args)
-        except:
-            self.logger.error("Pool callback raised exception: %s" % (
-                traceback.format_exc(), ),
-                exc_info=sys.exc_info())
+    def handle_timeouts(self):
+        if self._pool._timeout_handler:
+            self._pool._timeout_handler.handle_event()
 
     @property
-    def info(self):
-        return {"max-concurrency": self.limit,
-                "processes": [p.pid for p in self._pool._pool],
-                "max-tasks-per-child": self.maxtasksperchild,
-                "put-guarded-by-semaphore": self.putlocks,
-                "timeouts": (self.soft_timeout, self.timeout)}
+    def num_processes(self):
+        return self._pool._processes
+
+    @property
+    def readers(self):
+        return self._pool.readers
+
+    @property
+    def writers(self):
+        return self._pool.writers
+
+    @property
+    def timers(self):
+        return {self.maintain_pool: 30.0}

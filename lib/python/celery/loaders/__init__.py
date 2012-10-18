@@ -1,33 +1,35 @@
-import os
+# -*- coding: utf-8 -*-
+"""
+    celery.loaders
+    ~~~~~~~~~~~~~~
 
-from celery.utils import get_cls_by_name
+    Loaders define how configuration is read, what happens
+    when workers start, when tasks are executed and so on.
 
-LOADER_ALIASES = {"default": "celery.loaders.default.Loader",
-                  "django": "djcelery.loaders.DjangoLoader"}
-_loader = None
-_settings = None
+"""
+from __future__ import absolute_import
+
+from celery._state import current_app
+from celery.utils import deprecated
+from celery.utils.imports import symbol_by_name
+
+LOADER_ALIASES = {'app': 'celery.loaders.app:AppLoader',
+                  'default': 'celery.loaders.default:Loader',
+                  'django': 'djcelery.loaders:DjangoLoader'}
 
 
 def get_loader_cls(loader):
     """Get loader class by name/alias"""
-    return get_cls_by_name(loader, LOADER_ALIASES)
+    return symbol_by_name(loader, LOADER_ALIASES)
 
 
-def setup_loader():
-    return get_loader_cls(os.environ.setdefault("CELERY_LOADER", "default"))()
-
-
+@deprecated(deprecation='2.5', removal='4.0',
+        alternative='celery.current_app.loader')
 def current_loader():
-    """Detect and return the current loader."""
-    global _loader
-    if _loader is None:
-        _loader = setup_loader()
-    return _loader
+    return current_app.loader
 
 
+@deprecated(deprecation='2.5', removal='4.0',
+            alternative='celery.current_app.conf')
 def load_settings():
-    """Load the global settings object."""
-    global _settings
-    if _settings is None:
-        _settings = current_loader().conf
-    return _settings
+    return current_app.conf

@@ -1,202 +1,399 @@
-from __future__ import generators
+# -*- coding: utf-8 -*-
+"""
+    celery.datastructures
+    ~~~~~~~~~~~~~~~~~~~~~
 
+    Custom types and data structures.
+
+"""
+from __future__ import absolute_import
+from __future__ import with_statement
+
+import sys
 import time
-import traceback
 
-from UserList import UserList
-from Queue import Queue, Empty as QueueEmpty
+from collections import defaultdict
+from itertools import chain
 
-from celery.utils.compat import OrderedDict
+from billiard.einfo import ExceptionInfo  # noqa
+from kombu.utils.limits import TokenBucket  # noqa
+
+from .utils.functional import LRUCache, first, uniq  # noqa
 
 
-class AttributeDict(dict):
-    """Dict subclass with attribute access."""
+class CycleError(Exception):
+    """A cycle was detected in an acyclic graph."""
 
-    def __getattr__(self, key):
+
+class DependencyGraph(object):
+    """A directed acyclic graph of objects and their dependencies.
+
+    Supports a robust topological sort
+    to detect the order in which they must be handled.
+
+    Takes an optional iterator of ``(obj, dependencies)``
+    tuples to build the graph from.
+
+    .. warning::
+
+        Does not support cycle detection.
+
+    """
+
+    def __init__(self, it=None):
+        self.adjacent = {}
+        if it is not None:
+            self.update(it)
+
+    def add_arc(self, obj):
+        """Add an object to the graph."""
+        self.adjacent.setdefault(obj, [])
+
+    def add_edge(self, A, B):
+        """Add an edge from object ``A`` to object ``B``
+        (``A`` depends on ``B``)."""
+        self[A].append(B)
+
+    def topsort(self):
+        """Sort the graph topologically.
+
+        :returns: a list of objects in the order
+            in which they must be handled.
+
+        """
+        graph = DependencyGraph()
+        components = self._tarjan72()
+
+        NC = dict((node, component)
+                    for component in components
+                        for node in component)
+        for component in components:
+            graph.add_arc(component)
+        for node in self:
+            node_c = NC[node]
+            for successor in self[node]:
+                successor_c = NC[successor]
+                if node_c != successor_c:
+                    graph.add_edge(node_c, successor_c)
+        return [t[0] for t in graph._khan62()]
+
+    def valency_of(self, obj):
+        """Returns the velency (degree) of a vertex in the graph."""
         try:
-            return self[key]
+            l = [len(self[obj])]
         except KeyError:
-            raise AttributeError("'%s' object has no attribute '%s'" % (
-                    self.__class__.__name__, key))
+            return 0
+        for node in self[obj]:
+            l.append(self.valency_of(node))
+        return sum(l)
+
+    def update(self, it):
+        """Update the graph with data from a list
+        of ``(obj, dependencies)`` tuples."""
+        tups = list(it)
+        for obj, _ in tups:
+            self.add_arc(obj)
+        for obj, deps in tups:
+            for dep in deps:
+                self.add_edge(obj, dep)
+
+    def edges(self):
+        """Returns generator that yields for all edges in the graph."""
+        return (obj for obj, adj in self.iteritems() if adj)
+
+    def _khan62(self):
+        """Khans simple topological sort algorithm from '62
+
+        See http://en.wikipedia.org/wiki/Topological_sorting
+
+        """
+        count = defaultdict(lambda: 0)
+        result = []
+
+        for node in self:
+            for successor in self[node]:
+                count[successor] += 1
+        ready = [node for node in self if not count[node]]
+
+        while ready:
+            node = ready.pop()
+            result.append(node)
+
+            for successor in self[node]:
+                count[successor] -= 1
+                if count[successor] == 0:
+                    ready.append(successor)
+        result.reverse()
+        return result
+
+    def _tarjan72(self):
+        """Tarjan's algorithm to find strongly connected components.
+
+        See http://bit.ly/vIMv3h.
+
+        """
+        result, stack, low = [], [], {}
+
+        def visit(node):
+            if node in low:
+                return
+            num = len(low)
+            low[node] = num
+            stack_pos = len(stack)
+            stack.append(node)
+
+            for successor in self[node]:
+                visit(successor)
+                low[node] = min(low[node], low[successor])
+
+            if num == low[node]:
+                component = tuple(stack[stack_pos:])
+                stack[stack_pos:] = []
+                result.append(component)
+                for item in component:
+                    low[item] = len(self)
+
+        for node in self:
+            visit(node)
+
+        return result
+
+    def to_dot(self, fh, ws=' ' * 4):
+        """Convert the graph to DOT format.
+
+        :param fh: A file, or a file-like object to write the graph to.
+
+        """
+        fh.write('digraph dependencies {\n')
+        for obj, adjacent in self.iteritems():
+            if not adjacent:
+                fh.write(ws + '"%s"\n' % (obj, ))
+            for req in adjacent:
+                fh.write(ws + '"%s" -> "%s"\n' % (obj, req))
+        fh.write('}\n')
+
+    def __iter__(self):
+        return iter(self.adjacent)
+
+    def __getitem__(self, node):
+        return self.adjacent[node]
+
+    def __len__(self):
+        return len(self.adjacent)
+
+    def __contains__(self, obj):
+        return obj in self.adjacent
+
+    def _iterate_items(self):
+        return self.adjacent.iteritems()
+    items = iteritems = _iterate_items
+
+    def __repr__(self):
+        return '\n'.join(self.repr_node(N) for N in self)
+
+    def repr_node(self, obj, level=1):
+        output = ['%s(%s)' % (obj, self.valency_of(obj))]
+        if obj in self:
+            for other in self[obj]:
+                d = '%s(%s)' % (other, self.valency_of(other))
+                output.append('     ' * level + d)
+                output.extend(self.repr_node(other, level + 1).split('\n')[1:])
+        return '\n'.join(output)
+
+
+class AttributeDictMixin(object):
+    """Adds attribute access to mappings.
+
+    `d.key -> d[key]`
+
+    """
+
+    def __getattr__(self, k):
+        """`d.key -> d[key]`"""
+        try:
+            return self[k]
+        except KeyError:
+            raise AttributeError(
+                "'%s' object has no attribute '%s'" % (type(self).__name__, k))
 
     def __setattr__(self, key, value):
+        """`d[key] = value -> d.key = value`"""
         self[key] = value
 
 
-class PositionQueue(UserList):
-    """A positional queue of a specific length, with slots that are either
-    filled or unfilled. When all of the positions are filled, the queue
-    is considered :meth:`full`.
-
-    :param length: see :attr:`length`.
+class AttributeDict(dict, AttributeDictMixin):
+    """Dict subclass with attribute access."""
+    pass
 
 
-    .. attribute:: length
+class DictAttribute(object):
+    """Dict interface to attributes.
 
-        The number of items required for the queue to be considered full.
+    `obj[k] -> obj.k`
 
     """
 
-    class UnfilledPosition(object):
-        """Describes an unfilled slot."""
+    def __init__(self, obj):
+        self.obj = obj
 
-        def __init__(self, position):
-            # This is not used, but is an argument from xrange
-            # so why not.
-            self.position = position
-
-    def __init__(self, length):
-        self.length = length
-        self.data = map(self.UnfilledPosition, xrange(length))
-
-    def full(self):
-        """Returns ``True`` if all of the slots has been filled."""
-        return len(self) >= self.length
-
-    def __len__(self):
-        """``len(self)`` -> number of slots filled with real values."""
-        return len(self.filled)
-
-    @property
-    def filled(self):
-        """Returns the filled slots as a list."""
-        return filter(lambda v: not isinstance(v, self.UnfilledPosition),
-                      self.data)
-
-
-class ExceptionInfo(object):
-    """Exception wrapping an exception and its traceback.
-
-    :param exc_info: The exception tuple info as returned by
-        :func:`traceback.format_exception`.
-
-    .. attribute:: exception
-
-        The original exception.
-
-    .. attribute:: traceback
-
-        A traceback from the point when :attr:`exception` was raised.
-
-    """
-
-    def __init__(self, exc_info):
-        type_, exception, tb = exc_info
-        self.exception = exception
-        self.traceback = ''.join(traceback.format_exception(*exc_info))
-
-    def __str__(self):
-        return self.traceback
-
-    def __repr__(self):
-        return "<%s.%s: %s>" % (
-                self.__class__.__module__,
-                self.__class__.__name__,
-                str(self.exception))
-
-
-def consume_queue(queue):
-    """Iterator yielding all immediately available items in a
-    :class:`Queue.Queue`.
-
-    The iterator stops as soon as the queue raises :exc:`Queue.Empty`.
-
-    Example
-
-        >>> q = Queue()
-        >>> map(q.put, range(4))
-        >>> list(consume_queue(q))
-        [0, 1, 2, 3]
-        >>> list(consume_queue(q))
-        []
-
-    """
-    while 1:
+    def get(self, key, default=None):
         try:
-            yield queue.get_nowait()
-        except QueueEmpty:
-            break
+            return self[key]
+        except KeyError:
+            return default
+
+    def setdefault(self, key, default):
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+            return default
+
+    def __getitem__(self, key):
+        try:
+            return getattr(self.obj, key)
+        except AttributeError:
+            raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        setattr(self.obj, key, value)
+
+    def __contains__(self, key):
+        return hasattr(self.obj, key)
+
+    def _iterate_keys(self):
+        return iter(vars(self.obj))
+    iterkeys = _iterate_keys
+
+    def __iter__(self):
+        return self._iterate_keys()
+
+    def _iterate_items(self):
+        return vars(self.obj).iteritems()
+    iteritems = _iterate_items
+
+    if sys.version_info[0] == 3:  # pragma: no cover
+        items = _iterate_items
+        keys = _iterate_keys
+    else:
+
+        def keys(self):
+            return list(self)
+
+        def items(self):
+            return list(self._iterate_items())
 
 
-class SharedCounter(object):
-    """Thread-safe counter.
+class ConfigurationView(AttributeDictMixin):
+    """A view over an applications configuration dicts.
 
-    Please note that the final value is not synchronized, this means
-    that you should not update the value by using a previous value, the only
-    reliable operations are increment and decrement.
+    If the key does not exist in ``changes``, the ``defaults`` dict
+    is consulted.
 
-    Example
-
-        >>> max_clients = SharedCounter(initial_value=10)
-
-        # Thread one
-        >>> max_clients += 1 # OK (safe)
-
-        # Thread two
-        >>> max_clients -= 3 # OK (safe)
-
-        # Main thread
-        >>> if client >= int(max_clients): # Max clients now at 8
-        ...    wait()
-
-
-        >>> max_client = max_clients + 10 # NOT OK (unsafe)
+    :param changes:  Dict containing changes to the configuration.
+    :param defaults: Dict containing the default configuration.
 
     """
+    changes = None
+    defaults = None
+    _order = None
 
-    def __init__(self, initial_value):
-        self._value = initial_value
-        self._modify_queue = Queue()
+    def __init__(self, changes, defaults):
+        self.__dict__.update(changes=changes, defaults=defaults,
+                             _order=[changes] + defaults)
 
-    def increment(self, n=1):
-        """Increment value."""
-        self += n
-        return int(self)
+    def add_defaults(self, d):
+        self.defaults.insert(0, d)
+        self._order.insert(1, d)
 
-    def decrement(self, n=1):
-        """Decrement value."""
-        self -= n
-        return int(self)
+    def __getitem__(self, key):
+        for d in self._order:
+            try:
+                return d[key]
+            except KeyError:
+                pass
+        raise KeyError(key)
 
-    def _update_value(self):
-        self._value += sum(consume_queue(self._modify_queue))
-        return self._value
+    def __setitem__(self, key, value):
+        self.changes[key] = value
 
-    def __iadd__(self, y):
-        """``self += y``"""
-        self._modify_queue.put(y * +1)
-        return self
+    def first(self, *keys):
+        return first(None, (self.get(key) for key in keys))
 
-    def __isub__(self, y):
-        """``self -= y``"""
-        self._modify_queue.put(y * -1)
-        return self
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
-    def __int__(self):
-        """``int(self) -> int``"""
-        return self._update_value()
+    def setdefault(self, key, default):
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+            return default
+
+    def update(self, *args, **kwargs):
+        return self.changes.update(*args, **kwargs)
+
+    def __contains__(self, key):
+        for d in self._order:
+            if key in d:
+                return True
+        return False
 
     def __repr__(self):
-        return "<SharedCounter: int(%s)>" % str(int(self))
+        return repr(dict(self.iteritems()))
+
+    def __iter__(self):
+        return self._iterate_keys()
+
+    def _iter(self, op):
+        # defaults must be first in the stream, so values in
+        # changes takes precedence.
+        return chain(*[op(d) for d in reversed(self._order)])
+
+    def _iterate_keys(self):
+        return uniq(self._iter(lambda d: d))
+    iterkeys = _iterate_keys
+
+    def _iterate_items(self):
+        return ((key, self[key]) for key in self)
+    iteritems = _iterate_items
+
+    def _iterate_values(self):
+        return (self[key] for key in self)
+    itervalues = _iterate_values
+
+    def keys(self):
+        return list(self._iterate_keys())
+
+    def items(self):
+        return list(self._iterate_items())
+
+    def values(self):
+        return list(self._iterate_values())
 
 
 class LimitedSet(object):
     """Kind-of Set with limitations.
 
-    Good for when you need to test for membership (``a in set``),
+    Good for when you need to test for membership (`a in set`),
     but the list might become to big, so you want to limit it so it doesn't
     consume too much resources.
 
     :keyword maxlen: Maximum number of members before we start
-        deleting expired members.
+                     evicting expired members.
     :keyword expires: Time in seconds, before a membership expires.
 
     """
+    __slots__ = ('maxlen', 'expires', '_data', '__len__')
 
     def __init__(self, maxlen=None, expires=None):
         self.maxlen = maxlen
         self.expires = expires
         self._data = {}
+        self.__len__ = self._data.__len__
 
     def add(self, value):
         """Add a new member."""
@@ -219,7 +416,7 @@ class LimitedSet(object):
                 if not self.expires or time.time() > when + self.expires:
                     try:
                         self.pop_value(value)
-                    except TypeError:                   # pragma: no cover
+                    except TypeError:  # pragma: no cover
                         continue
             break
 
@@ -230,19 +427,17 @@ class LimitedSet(object):
         if isinstance(other, self.__class__):
             self._data.update(other._data)
         else:
-            self._data.update(other)
+            for obj in other:
+                self.add(obj)
 
     def as_dict(self):
         return self._data
 
     def __iter__(self):
-        return iter(self._data.keys())
-
-    def __len__(self):
-        return len(self._data.keys())
+        return iter(self._data)
 
     def __repr__(self):
-        return "LimitedSet([%s])" % (repr(self._data.keys()))
+        return 'LimitedSet(%r)' % (list(self._data), )
 
     @property
     def chronologically(self):
@@ -252,72 +447,3 @@ class LimitedSet(object):
     def first(self):
         """Get the oldest member."""
         return self.chronologically[0]
-
-
-class LocalCache(OrderedDict):
-    """Dictionary with a finite number of keys.
-
-    Older items expires first.
-
-    """
-
-    def __init__(self, limit=None):
-        super(LocalCache, self).__init__()
-        self.limit = limit
-
-    def __setitem__(self, key, value):
-        while len(self) >= self.limit:
-            self.popitem(last=False)
-        super(LocalCache, self).__setitem__(key, value)
-
-
-class TokenBucket(object):
-    """Token Bucket Algorithm.
-
-    See http://en.wikipedia.org/wiki/Token_Bucket
-    Most of this code was stolen from an entry in the ASPN Python Cookbook:
-    http://code.activestate.com/recipes/511490/
-
-    :param fill_rate: see :attr:`fill_rate`.
-    :keyword capacity: see :attr:`capacity`.
-
-    .. attribute:: fill_rate
-
-        The rate in tokens/second that the bucket will be refilled.
-
-    .. attribute:: capacity
-
-        Maximum number of tokens in the bucket. Default is ``1``.
-
-    .. attribute:: timestamp
-
-        Timestamp of the last time a token was taken out of the bucket.
-
-    """
-
-    def __init__(self, fill_rate, capacity=1):
-        self.capacity = float(capacity)
-        self._tokens = capacity
-        self.fill_rate = float(fill_rate)
-        self.timestamp = time.time()
-
-    def can_consume(self, tokens=1):
-        if tokens <= self._get_tokens():
-            self._tokens -= tokens
-            return True
-        return False
-
-    def expected_time(self, tokens=1):
-        """Returns the expected time in seconds when a new token should be
-        available. *Note: consumes a token from the bucket*"""
-        _tokens = self._get_tokens()
-        tokens = max(tokens, _tokens)
-        return (tokens - _tokens) / self.fill_rate
-
-    def _get_tokens(self):
-        if self._tokens < self.capacity:
-            now = time.time()
-            delta = self.fill_rate * (now - self.timestamp)
-            self._tokens = min(self.capacity, self._tokens + delta)
-            self.timestamp = now
-        return self._tokens

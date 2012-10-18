@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 import atexit
 import logging
 import os
@@ -5,24 +7,27 @@ import signal
 import socket
 import sys
 import traceback
-import unittest2 as unittest
 
 from itertools import count
+from time import time
 
 from celery.exceptions import TimeoutError
 from celery.task.control import ping, flatten_reply, inspect
-from celery.utils import get_full_cls_name
+from celery.utils.imports import qualname
+
+from celery.tests.utils import Case
 
 HOSTNAME = socket.gethostname()
 
 
 def say(msg):
-    sys.stderr.write("%s\n" % msg)
+    sys.stderr.write('%s\n' % msg)
 
 
-def try_while(fun, reason="Timed out", timeout=10, interval=0.5):
+def try_while(fun, reason='Timed out', timeout=10, interval=0.5):
+    time_start = time()
     for iterations in count(0):
-        if iterations * interval >= timeout:
+        if time() - time_start >= timeout:
             raise TimeoutError()
         ret = fun()
         if ret:
@@ -34,7 +39,7 @@ class Worker(object):
     next_worker_id = count(1).next
     _shutdown_called = False
 
-    def __init__(self, hostname, loglevel="error"):
+    def __init__(self, hostname, loglevel='error'):
         self.hostname = hostname
         self.loglevel = loglevel
 
@@ -46,11 +51,11 @@ class Worker(object):
     def _fork_and_exec(self):
         pid = os.fork()
         if pid == 0:
-            os.execv(sys.executable,
-                    [sys.executable] + ["-m", "celery.bin.celeryd",
-                                        "-l", self.loglevel,
-                                        "-n", self.hostname])
-            os.exit()
+            from celery import current_app
+            current_app.worker_main(['celeryd', '--loglevel=INFO',
+                                                '-n', self.hostname,
+                                                '-P', 'solo'])
+            os._exit(0)
         self.pid = pid
 
     def is_alive(self, timeout=1):
@@ -58,18 +63,18 @@ class Worker(object):
                  timeout=timeout)
         return self.hostname in flatten_reply(r)
 
-    def wait_until_started(self, timeout=10, interval=0.2):
+    def wait_until_started(self, timeout=10, interval=0.5):
         try_while(lambda: self.is_alive(interval),
                 "Worker won't start (after %s secs.)" % timeout,
-                interval=0.2, timeout=10)
-        say("--WORKER %s IS ONLINE--" % self.hostname)
+                interval=interval, timeout=timeout)
+        say('--WORKER %s IS ONLINE--' % self.hostname)
 
     def ensure_shutdown(self, timeout=10, interval=0.5):
         os.kill(self.pid, signal.SIGTERM)
         try_while(lambda: not self.is_alive(interval),
                   "Worker won't shutdown (after %s secs.)" % timeout,
                   timeout=10, interval=0.5)
-        say("--WORKER %s IS SHUTDOWN--" % self.hostname)
+        say('--WORKER %s IS SHUTDOWN--' % self.hostname)
         self._shutdown_called = True
 
     def ensure_started(self):
@@ -80,7 +85,7 @@ class Worker(object):
     def managed(cls, hostname=None, caller=None):
         hostname = hostname or socket.gethostname()
         if caller:
-            hostname = ".".join([get_full_cls_name(caller), hostname])
+            hostname = '.'.join([qualname(caller), hostname])
         else:
             hostname += str(cls.next_worker_id())
         worker = cls(hostname)
@@ -90,21 +95,21 @@ class Worker(object):
         @atexit.register
         def _ensure_shutdown_once():
             if not worker._shutdown_called:
-                say("-- Found worker not stopped at shutdown: %s\n%s" % (
+                say('-- Found worker not stopped at shutdown: %s\n%s' % (
                         worker.hostname,
-                        "\n".join(stack)))
+                        '\n'.join(stack)))
                 worker.ensure_shutdown()
 
         return worker
 
 
-class WorkerCase(unittest.TestCase):
+class WorkerCase(Case):
     hostname = HOSTNAME
     worker = None
 
     @classmethod
     def setUpClass(cls):
-        logging.getLogger("amqplib").setLevel(logging.ERROR)
+        logging.getLogger('amqplib').setLevel(logging.ERROR)
         cls.worker = Worker.managed(cls.hostname, caller=cls)
 
     @classmethod
@@ -115,7 +120,7 @@ class WorkerCase(unittest.TestCase):
         self.assertTrue(self.worker.is_alive)
 
     def inspect(self, timeout=1):
-        return inspect(self.worker.hostname, timeout=timeout)
+        return inspect([self.worker.hostname], timeout=timeout)
 
     def my_response(self, response):
         return flatten_reply(response)[self.worker.hostname]
@@ -123,24 +128,24 @@ class WorkerCase(unittest.TestCase):
     def is_accepted(self, task_id, interval=0.5):
         active = self.inspect(timeout=interval).active()
         if active:
-            for task in active:
-                if task["id"] == task_id:
+            for task in active[self.worker.hostname]:
+                if task['id'] == task_id:
                     return True
         return False
 
     def is_reserved(self, task_id, interval=0.5):
         reserved = self.inspect(timeout=interval).reserved()
         if reserved:
-            for task in reserved:
-                if task["id"] == task_id:
+            for task in reserved[self.worker.hostname]:
+                if task['id'] == task_id:
                     return True
         return False
 
     def is_scheduled(self, task_id, interval=0.5):
         schedule = self.inspect(timeout=interval).scheduled()
         if schedule:
-            for item in schedule:
-                if item["request"]["id"] == task_id:
+            for item in schedule[self.worker.hostname]:
+                if item['request']['id'] == task_id:
                     return True
         return False
 
@@ -151,15 +156,15 @@ class WorkerCase(unittest.TestCase):
 
     def ensure_accepted(self, task_id, interval=0.5, timeout=10):
         return try_while(lambda: self.is_accepted(task_id, interval),
-                         "Task not accepted within timeout",
+                         'Task not accepted within timeout',
                          interval=0.5, timeout=10)
 
     def ensure_received(self, task_id, interval=0.5, timeout=10):
         return try_while(lambda: self.is_received(task_id, interval),
-                        "Task not receied within timeout",
+                        'Task not receied within timeout',
                         interval=0.5, timeout=10)
 
     def ensure_scheduled(self, task_id, interval=0.5, timeout=10):
         return try_while(lambda: self.is_scheduled(task_id, interval),
-                        "Task not scheduled within timeout",
+                        'Task not scheduled within timeout',
                         interval=0.5, timeout=10)

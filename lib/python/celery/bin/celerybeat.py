@@ -1,68 +1,93 @@
-#!/usr/bin/env python
-"""celerybeat
+# -*- coding: utf-8 -*-
+"""
 
-.. program:: celerybeat
+The :program:`celery beat` command.
+
+.. program:: celery beat
+
+.. seealso::
+
+    See :ref:`preload-options` and :ref:`daemon-options`.
+
+.. cmdoption:: --detach
+
+    Detach and run in the background as a daemon.
 
 .. cmdoption:: -s, --schedule
 
-    Path to the schedule database. Defaults to ``celerybeat-schedule``.
-    The extension ".db" will be appended to the filename.
+    Path to the schedule database. Defaults to `celerybeat-schedule`.
+    The extension '.db' may be appended to the filename.
+    Default is %(default)s.
 
 .. cmdoption:: -S, --scheduler
 
-    Scheduler class to use. Default is celery.beat.PersistentScheduler
+    Scheduler class to use.
+    Default is :class:`celery.beat.PersistentScheduler`.
+
+.. cmdoption:: max-interval
+
+    Max seconds to sleep between schedule iterations.
 
 .. cmdoption:: -f, --logfile
 
-    Path to log file. If no logfile is specified, ``stderr`` is used.
+    Path to log file. If no logfile is specified, `stderr` is used.
 
 .. cmdoption:: -l, --loglevel
 
-    Logging level, choose between ``DEBUG``, ``INFO``, ``WARNING``,
-    ``ERROR``, ``CRITICAL``, or ``FATAL``.
+    Logging level, choose between `DEBUG`, `INFO`, `WARNING`,
+    `ERROR`, `CRITICAL`, or `FATAL`.
 
 """
-from celery.bin.base import Command, Option
+from __future__ import with_statement
+from __future__ import absolute_import
+
+import os
+
+from functools import partial
+
+from celery.platforms import detached
+
+from celery.bin.base import Command, Option, daemon_options
 
 
 class BeatCommand(Command):
+    doc = __doc__
+    enable_config_from_cmdline = True
+    supports_args = False
 
-    def run(self, *args, **kwargs):
-        from celery.apps.beat import Beat
-        kwargs["defaults"] = self.defaults
-        return Beat(**kwargs).run()
+    def run(self, detach=False, logfile=None, pidfile=None, uid=None,
+            gid=None, umask=None, working_directory=None, **kwargs):
+        workdir = working_directory
+        kwargs.pop('app', None)
+        beat = partial(self.app.Beat,
+                       logfile=logfile, pidfile=pidfile, **kwargs)
+
+        if detach:
+            with detached(logfile, pidfile, uid, gid, umask, workdir):
+                return beat().run()
+        else:
+            return beat().run()
+
+    def prepare_preload_options(self, options):
+        workdir = options.get('working_directory')
+        if workdir:
+            os.chdir(workdir)
 
     def get_options(self):
-        conf = self.defaults
+        c = self.app.conf
 
         return (
-            Option('-s', '--schedule',
-                default=conf.CELERYBEAT_SCHEDULE_FILENAME,
-                action="store", dest="schedule",
-                help="Path to the schedule database. The extension "
-                    "'.db' will be appended to the filename. Default: %s" % (
-                            conf.CELERYBEAT_SCHEDULE_FILENAME, )),
-            Option('--max-interval',
-                default=3600.0, type="float", dest="max_interval",
-                help="Max. seconds to sleep between schedule iterations."),
-            Option('-S', '--scheduler',
-                default=None,
-                action="store", dest="scheduler_cls",
-                help="Scheduler class. Default is "
-                     "celery.beat.PersistentScheduler"),
-            Option('-f', '--logfile', default=conf.CELERYBEAT_LOG_FILE,
-                action="store", dest="logfile",
-                help="Path to log file."),
-            Option('-l', '--loglevel',
-                default=conf.CELERYBEAT_LOG_LEVEL,
-                action="store", dest="loglevel",
-                help="Loglevel. One of DEBUG/INFO/WARNING/ERROR/CRITICAL."),
-        )
+            Option('--detach', action='store_true'),
+            Option('-s', '--schedule', default=c.CELERYBEAT_SCHEDULE_FILENAME),
+            Option('--max-interval', type='float'),
+            Option('-S', '--scheduler', dest='scheduler_cls'),
+            Option('-l', '--loglevel', default=c.CELERYBEAT_LOG_LEVEL),
+        ) + daemon_options(default_pidfile='celerybeat.pid')
 
 
 def main():
     beat = BeatCommand()
     beat.execute_from_commandline()
 
-if __name__ == "__main__":      # pragma: no cover
+if __name__ == '__main__':      # pragma: no cover
     main()
