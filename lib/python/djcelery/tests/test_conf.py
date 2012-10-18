@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 from django.conf import settings
 
 from celery import conf
@@ -33,4 +35,3 @@ class TestConf(unittest.TestCase):
     def test_configuration_cls(self):
         for setting_name, result_var in SETTING_VARS:
             self.assertDefaultSetting(setting_name, result_var)
-        self.assertIsInstance(conf.CELERYD_LOG_LEVEL, int)

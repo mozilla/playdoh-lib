@@ -1,12 +1,15 @@
-from datetime import datetime, timedelta
+from __future__ import absolute_import
 
-from celery import conf
+from datetime import timedelta
+
+from celery import current_app
 from celery import states
 from celery.result import AsyncResult
 from celery.task import PeriodicTask
 from celery.utils import gen_unique_id
 
 from djcelery.backends.database import DatabaseBackend
+from djcelery.utils import now
 from djcelery.tests.utils import unittest
 
 
@@ -75,6 +78,8 @@ class TestDatabaseBackend(unittest.TestCase):
         self.assertIsNotNone(rindb)
         self.assertEqual(rindb.get("foo"), "baz")
         self.assertEqual(rindb.get("bar").data, 12345)
+        b.delete_taskset(tid)
+        self.assertIsNone(b.restore_taskset(tid))
 
     def test_cleanup(self):
         b = DatabaseBackend()
@@ -85,7 +90,7 @@ class TestDatabaseBackend(unittest.TestCase):
 
         self.assertEqual(b.TaskModel._default_manager.count(), 3)
 
-        then = datetime.now() - conf.TASK_RESULT_EXPIRES * 2
+        then = now() - current_app.conf.CELERY_TASK_RESULT_EXPIRES * 2
         # Have to avoid save() because it applies the auto_now=True.
         b.TaskModel._default_manager.filter(task_id__in=ids[:-1]) \
                                     .update(date_done=then)

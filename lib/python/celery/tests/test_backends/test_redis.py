@@ -1,17 +1,18 @@
+from __future__ import absolute_import
+from __future__ import with_statement
+
 import sys
 import socket
-import unittest2 as unittest
 
 from nose import SkipTest
 
 from celery.exceptions import ImproperlyConfigured
 
 from celery import states
-from celery.utils import gen_unique_id
-from celery.backends import pyredis
-from celery.backends.pyredis import RedisBackend
-
-from celery.tests.utils import execute_context, mask_modules
+from celery.utils import uuid
+from celery.backends import redis
+from celery.backends.redis import RedisBackend
+from celery.tests.utils import Case, mask_modules
 
 _no_redis_msg = "* Redis %s. Will not execute related tests."
 _no_redis_msg_emitted = False
@@ -19,7 +20,7 @@ _no_redis_msg_emitted = False
 try:
     from redis.exceptions import ConnectionError
 except ImportError:
-    class ConnectionError(socket.error):
+    class ConnectionError(socket.error):  # noqa
         pass
 
 
@@ -37,15 +38,14 @@ def get_redis_or_SkipTest():
             sys.stderr.write("\n" + _no_redis_msg % reason + "\n")
             _no_redis_msg_emitted = True
 
-    if pyredis.redis is None:
+    if redis.redis is None:
         emit_no_redis_msg("not installed")
         raise SkipTest("redis library not installed")
     try:
         tb = RedisBackend(redis_db="celery_unittest")
         try:
-            tb.open()
             # Evaluate lazy connection
-            tb._connection.connection.connect(tb._connection)
+            tb.client.info()
         except ConnectionError, exc:
             emit_no_redis_msg("not running")
             raise SkipTest("can't connect to redis: %s" % (exc, ))
@@ -56,21 +56,12 @@ def get_redis_or_SkipTest():
         return emit_no_redis_msg("not configured")
 
 
-class TestRedisBackend(unittest.TestCase):
-
-    def test_cached_connection(self):
-        tb = get_redis_or_SkipTest()
-
-        self.assertIsNotNone(tb._connection)
-        tb.close()
-        self.assertIsNone(tb._connection)
-        tb.open()
-        self.assertIsNotNone(tb._connection)
+class TestRedisBackend(Case):
 
     def test_mark_as_done(self):
         tb = get_redis_or_SkipTest()
 
-        tid = gen_unique_id()
+        tid = uuid()
 
         self.assertEqual(tb.get_status(tid), states.PENDING)
         self.assertIsNone(tb.get_result(tid))
@@ -82,7 +73,7 @@ class TestRedisBackend(unittest.TestCase):
     def test_is_pickled(self):
         tb = get_redis_or_SkipTest()
 
-        tid2 = gen_unique_id()
+        tid2 = uuid()
         result = {"foo": "baz", "bar": SomeClass(12345)}
         tb.mark_as_done(tid2, result)
         # is serialized properly.
@@ -93,7 +84,7 @@ class TestRedisBackend(unittest.TestCase):
     def test_mark_as_failure(self):
         tb = get_redis_or_SkipTest()
 
-        tid3 = gen_unique_id()
+        tid3 = uuid()
         try:
             raise KeyError("foo")
         except KeyError, exception:
@@ -102,55 +93,24 @@ class TestRedisBackend(unittest.TestCase):
         self.assertEqual(tb.get_status(tid3), states.FAILURE)
         self.assertIsInstance(tb.get_result(tid3), KeyError)
 
-    def test_process_cleanup(self):
-        tb = get_redis_or_SkipTest()
 
-        tb.process_cleanup()
+class TestRedisBackendNoRedis(Case):
 
-        self.assertIsNone(tb._connection)
-
-    def test_connection_close_if_connected(self):
-        tb = get_redis_or_SkipTest()
-
-        tb.open()
-        self.assertIsNotNone(tb._connection)
-        tb.close()
-        self.assertIsNone(tb._connection)
-        tb.close()
-        self.assertIsNone(tb._connection)
-
-
-class TestTyrantBackendNoTyrant(unittest.TestCase):
-
-    def test_tyrant_None_if_tyrant_not_installed(self):
-        prev = sys.modules.pop("celery.backends.pyredis")
+    def test_redis_None_if_redis_not_installed(self):
+        prev = sys.modules.pop("celery.backends.redis")
         try:
-            def with_redis_masked(_val):
-                from celery.backends.pyredis import redis
+            with mask_modules("redis"):
+                from celery.backends.redis import redis
                 self.assertIsNone(redis)
-            context = mask_modules("redis")
-            execute_context(context, with_redis_masked)
         finally:
-            sys.modules["celery.backends.pyredis"] = prev
+            sys.modules["celery.backends.redis"] = prev
 
-    def test_constructor_raises_if_tyrant_not_installed(self):
-        from celery.backends import pyredis
-        prev = pyredis.redis
-        pyredis.redis = None
+    def test_constructor_raises_if_redis_not_installed(self):
+        from celery.backends import redis
+        prev = redis.RedisBackend.redis
+        redis.RedisBackend.redis = None
         try:
-            self.assertRaises(ImproperlyConfigured, pyredis.RedisBackend)
+            with self.assertRaises(ImproperlyConfigured):
+                redis.RedisBackend()
         finally:
-            pyredis.redis = prev
-
-    def test_constructor_raises_if_not_host_or_port(self):
-        from celery.backends import pyredis
-        from celery.loaders import load_settings
-
-        settings = load_settings()
-        prev_host, settings.REDIS_HOST = settings.REDIS_HOST, None
-        prev_port, settings.REDIS_PORT = settings.REDIS_PORT, None
-        try:
-            self.assertRaises(ImproperlyConfigured, pyredis.RedisBackend)
-        finally:
-            settings.REDIS_HOST = prev_host
-            settings.REDIS_PORT = prev_port
+            redis.RedisBackend.redis = prev

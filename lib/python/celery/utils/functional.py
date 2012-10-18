@@ -1,138 +1,66 @@
-"""Functional utilities for Python 2.4 compatibility."""
-# License for code in this file that was taken from Python 2.5.
+# -*- coding: utf-8 -*-
+"""
+    celery.utils.functional
+    ~~~~~~~~~~~~~~~~~~~~~~~
 
-# PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
-# --------------------------------------------
-#
-# 1. This LICENSE AGREEMENT is between the Python Software Foundation
-# ("PSF"), and the Individual or Organization ("Licensee") accessing and
-# otherwise using this software ("Python") in source or binary form and
-# its associated documentation.
-#
-# 2. Subject to the terms and conditions of this License Agreement, PSF
-# hereby grants Licensee a nonexclusive, royalty-free, world-wide
-# license to reproduce, analyze, test, perform and/or display publicly,
-# prepare derivative works, distribute, and otherwise use Python
-# alone or in any derivative version, provided, however, that PSF's
-# License Agreement and PSF's notice of copyright, i.e., "Copyright (c)
-# 2001, 2002, 2003, 2004, 2005, 2006, 2007 Python Software Foundation;
-# All Rights Reserved" are retained in Python alone or in any derivative
-# version prepared by Licensee.
-#
-# 3. In the event Licensee prepares a derivative work that is based on
-# or incorporates Python or any part thereof, and wants to make
-# the derivative work available to others as provided herein, then
-# Licensee hereby agrees to include in any such work a brief summary of
-# the changes made to Python.
-#
-# 4. PSF is making Python available to Licensee on an "AS IS"
-# basis.  PSF MAKES NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR
-# IMPLIED.  BY WAY OF EXAMPLE, BUT NOT LIMITATION, PSF MAKES NO AND
-# DISCLAIMS ANY REPRESENTATION OR WARRANTY OF MERCHANTABILITY OR FITNESS
-# FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON WILL NOT
-# INFRINGE ANY THIRD PARTY RIGHTS.
-#
-# 5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON
-# FOR ANY INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS
-# A RESULT OF MODIFYING, DISTRIBUTING, OR OTHERWISE USING PYTHON,
-# OR ANY DERIVATIVE THEREOF, EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
-#
-# 6. This License Agreement will automatically terminate upon a material
-# breach of its terms and conditions.
-#
-# 7. Nothing in this License Agreement shall be deemed to create any
-# relationship of agency, partnership, or joint venture between PSF and
-# Licensee.  This License Agreement does not grant permission to use PSF
-# trademarks or trade name in a trademark sense to endorse or promote
-# products or services of Licensee, or any third party.
-#
-# 8. By copying, installing or otherwise using Python, Licensee
-# agrees to be bound by the terms and conditions of this License
-# Agreement.
+    Utilities for functions.
 
-### Begin from Python 2.5 functools.py ########################################
+    :copyright: (c) 2009 - 2012 by Ask Solem.
+    :license: BSD, see LICENSE for more details.
 
-# Summary of changes made to the Python 2.5 code below:
-#   * swapped ``partial`` for ``curry`` to maintain backwards-compatibility
-#     in Django.
-#   * Wrapped the ``setattr`` call in ``update_wrapper`` with a try-except
-#     block to make it compatible with Python 2.3, which doesn't allow
-#     assigning to ``__name__``.
+"""
+from __future__ import absolute_import
+from __future__ import with_statement
 
-# Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007 Python Software
-# Foundation. All Rights Reserved.
-
-###############################################################################
-
-# update_wrapper() and wraps() are tools to help write
-# wrapper functions that can handle naive introspection
-
-
-def _compat_curry(fun, *args, **kwargs):
-    """New function with partial application of the given arguments
-    and keywords."""
-
-    def _curried(*addargs, **addkwargs):
-        return fun(*(args + addargs), **dict(kwargs, **addkwargs))
-    return _curried
-
+from functools import wraps
+from threading import Lock
 
 try:
-    from functools import partial as curry
+    from collections import Sequence
 except ImportError:
-    curry = _compat_curry
+    # <= Py2.5
+    Sequence = (list, tuple)  # noqa
 
-WRAPPER_ASSIGNMENTS = ('__module__', '__name__', '__doc__')
-WRAPPER_UPDATES = ('__dict__',)
+from celery.datastructures import LRUCache
 
-
-def _compat_update_wrapper(wrapper, wrapped, assigned=WRAPPER_ASSIGNMENTS,
-        updated=WRAPPER_UPDATES):
-    """Update a wrapper function to look like the wrapped function
-
-       wrapper is the function to be updated
-       wrapped is the original function
-       assigned is a tuple naming the attributes assigned directly
-       from the wrapped function to the wrapper function (defaults to
-       functools.WRAPPER_ASSIGNMENTS)
-       updated is a tuple naming the attributes off the wrapper that
-       are updated with the corresponding attribute from the wrapped
-       function (defaults to functools.WRAPPER_UPDATES)
-
-    """
-    for attr in assigned:
-        try:
-            setattr(wrapper, attr, getattr(wrapped, attr))
-        except TypeError:   # Python 2.3 doesn't allow assigning to __name__.
-            pass
-    for attr in updated:
-        getattr(wrapper, attr).update(getattr(wrapped, attr))
-    # Return the wrapper so this can be used as a decorator via curry()
-    return wrapper
-
-try:
-    from functools import update_wrapper
-except ImportError:
-    update_wrapper = _compat_update_wrapper
+KEYWORD_MARK = object()
 
 
-def _compat_wraps(wrapped, assigned=WRAPPER_ASSIGNMENTS,
-        updated=WRAPPER_UPDATES):
-    """Decorator factory to apply update_wrapper() to a wrapper function
+def maybe_list(l):
+    if isinstance(l, Sequence):
+        return l
+    return [l]
 
-    Returns a decorator that invokes update_wrapper() with the decorated
-    function as the wrapper argument and the arguments to wraps() as the
-    remaining arguments. Default arguments are as for update_wrapper().
-    This is a convenience function to simplify applying curry() to
-    update_wrapper().
 
-    """
-    return curry(update_wrapper, wrapped=wrapped,
-                 assigned=assigned, updated=updated)
+def memoize(maxsize=None, Cache=LRUCache):
 
-try:
-    from functools import wraps
-except ImportError:
-    wraps = _compat_wraps
+    def _memoize(fun):
+        mutex = Lock()
+        cache = Cache(limit=maxsize)
 
-### End from Python 2.5 functools.py ##########################################
+        @wraps(fun)
+        def _M(*args, **kwargs):
+            key = args + (KEYWORD_MARK, ) + tuple(sorted(kwargs.iteritems()))
+            try:
+                with mutex:
+                    value = cache[key]
+            except KeyError:
+                value = fun(*args, **kwargs)
+                _M.misses += 1
+                with mutex:
+                    cache[key] = value
+            else:
+                _M.hits += 1
+            return value
+
+        def clear():
+            """Clear the cache and reset cache statistics."""
+            cache.clear()
+            _M.hits = _M.misses = 0
+
+        _M.hits = _M.misses = 0
+        _M.clear = clear
+        _M.original_func = fun
+        return _M
+
+    return _memoize

@@ -1,6 +1,8 @@
+from __future__ import absolute_import
+
 from django.conf import settings
 
-from celery.task import tasks
+from celery.registry import tasks
 
 from djcelery.loaders import autodiscover
 from djcelery.tests.utils import unittest

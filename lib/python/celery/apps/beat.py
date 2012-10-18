@@ -1,13 +1,16 @@
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+
+import atexit
 import socket
 import sys
-import traceback
 
-from celery import __version__
-from celery import beat
-from celery import platforms
-from celery.utils import get_full_cls_name, info, LOG_LEVELS
-from celery.utils.info import humanize_seconds
-from celery.utils import term
+from .. import __version__, platforms
+from .. import beat
+from ..app import app_or_default
+from ..app.abstract import configurated, from_config
+from ..utils import LOG_LEVELS, qualname
+from ..utils.timeutils import humanize_seconds
 
 STARTUP_INFO_FMT = """
 Configuration ->
@@ -20,29 +23,26 @@ Configuration ->
 """.strip()
 
 
-class Beat(object):
+class Beat(configurated):
     Service = beat.Service
 
-    def __init__(self, loglevel=None, logfile=None, schedule=None,
-            max_interval=None, scheduler_cls=None, defaults=None,
-            socket_timeout=30, redirect_stdouts=None,
-            redirect_stdouts_level=None, **kwargs):
+    loglevel = from_config("log_level")
+    logfile = from_config("log_file")
+    schedule = from_config("schedule_filename")
+    scheduler_cls = from_config("scheduler")
+    redirect_stdouts = from_config()
+    redirect_stdouts_level = from_config()
+
+    def __init__(self, max_interval=None, app=None,
+            socket_timeout=30, pidfile=None, **kwargs):
         """Starts the celerybeat task scheduler."""
+        self.app = app = app_or_default(app)
+        self.setup_defaults(kwargs, namespace="celerybeat")
 
-        if defaults is None:
-            from celery import conf as defaults
-        self.defaults = defaults
-
-        self.loglevel = loglevel or defaults.CELERYBEAT_LOG_LEVEL
-        self.logfile = logfile or defaults.CELERYBEAT_LOG_FILE
-        self.schedule = schedule or defaults.CELERYBEAT_SCHEDULE_FILENAME
-        self.scheduler_cls = scheduler_cls or defaults.CELERYBEAT_SCHEDULER
         self.max_interval = max_interval
         self.socket_timeout = socket_timeout
-        self.colored = term.colored(enabled=defaults.CELERYD_LOG_COLOR)
-        self.redirect_stdouts = redirect_stdouts or defaults.REDIRECT_STDOUTS
-        self.redirect_stdouts_level = (redirect_stdouts_level or
-                                       defaults.REDIRECT_STDOUTS_LEVEL)
+        self.colored = app.log.colored(self.logfile)
+        self.pidfile = pidfile
 
         if not isinstance(self.loglevel, int):
             self.loglevel = LOG_LEVELS[self.loglevel.upper()]
@@ -56,18 +56,21 @@ class Beat(object):
         self.start_scheduler(logger)
 
     def setup_logging(self):
-        from celery import log
-        handled = log.setup_logging_subsystem(loglevel=self.loglevel,
-                                              logfile=self.logfile)
-        logger = log.get_default_logger(name="celery.beat")
+        handled = self.app.log.setup_logging_subsystem(loglevel=self.loglevel,
+                                                       logfile=self.logfile)
+        logger = self.app.log.get_default_logger(name="celery.beat")
         if self.redirect_stdouts and not handled:
-            log.redirect_stdouts_to_logger(logger,
+            self.app.log.redirect_stdouts_to_logger(logger,
                     loglevel=self.redirect_stdouts_level)
         return logger
 
     def start_scheduler(self, logger=None):
         c = self.colored
-        beat = self.Service(logger=logger,
+        if self.pidfile:
+            pidlock = platforms.create_pidlock(self.pidfile).acquire()
+            atexit.register(pidlock.release)
+        beat = self.Service(app=self.app,
+                            logger=logger,
                             max_interval=self.max_interval,
                             scheduler_cls=self.scheduler_cls,
                             schedule_filename=self.schedule)
@@ -77,32 +80,30 @@ class Beat(object):
                   c.blue("        _\n"),
                   c.reset(self.startup_info(beat)))))
         if self.socket_timeout:
-            logger.debug("Setting default socket timeout to %r" % (
-                self.socket_timeout))
+            logger.debug("Setting default socket timeout to %r",
+                         self.socket_timeout)
             socket.setdefaulttimeout(self.socket_timeout)
         try:
             self.install_sync_handler(beat)
             beat.start()
         except Exception, exc:
-            logger.critical("celerybeat raised exception: %r\n%s" % (
-                            exc, traceback.format_exc()),
-                            exc_info=sys.exc_info())
+            logger.critical("celerybeat raised exception %s: %r",
+                            exc.__class__, exc,
+                            exc_info=True)
 
     def init_loader(self):
         # Run the worker init handler.
         # (Usually imports task modules and such.)
-        from celery.loaders import current_loader
-        self.loader = current_loader()
-        self.loader.init_worker()
+        self.app.loader.init_worker()
 
     def startup_info(self, beat):
         scheduler = beat.get_scheduler(lazy=True)
         return STARTUP_INFO_FMT % {
-            "conninfo": info.format_broker_info(),
+            "conninfo": self.app.broker_connection().as_uri(),
             "logfile": self.logfile or "[stderr]",
             "loglevel": LOG_LEVELS[self.loglevel],
-            "loader": get_full_cls_name(self.loader.__class__),
-            "scheduler": get_full_cls_name(scheduler.__class__),
+            "loader": qualname(self.app.loader),
+            "scheduler": qualname(scheduler),
             "scheduler_info": scheduler.info,
             "hmax_interval": humanize_seconds(beat.max_interval),
             "max_interval": beat.max_interval,
@@ -114,16 +115,11 @@ class Beat(object):
                                info=" ".join(sys.argv[arg_start:]))
 
     def install_sync_handler(self, beat):
-        """Install a ``SIGTERM`` + ``SIGINT`` handler that saves
+        """Install a `SIGTERM` + `SIGINT` handler that saves
         the celerybeat schedule."""
 
         def _sync(signum, frame):
             beat.sync()
             raise SystemExit()
 
-        platforms.install_signal_handler("SIGTERM", _sync)
-        platforms.install_signal_handler("SIGINT", _sync)
-
-
-def run_celerybeat(*args, **kwargs):
-    return Beat(*args, **kwargs).run()
+        platforms.signals.update(SIGTERM=_sync, SIGINT=_sync)

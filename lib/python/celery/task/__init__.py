@@ -1,82 +1,95 @@
+# -*- coding: utf-8 -*-
 """
+    celery.task
+    ~~~~~~~~~~~
 
-Working with tasks and task sets.
+    Creating tasks, subtasks, sets and chords.
+
+    :copyright: (c) 2009 - 2012 by Ask Solem.
+    :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
 
-from celery.execute import apply_async
-from celery.registry import tasks
-from celery.serialization import pickle
-from celery.task.base import Task, PeriodicTask
-from celery.task.sets import TaskSet
-from celery.task.builtins import PingTask, ExecuteRemoteTask
-from celery.task.builtins import AsynchronousMapTask, _dmap
-from celery.task.control import discard_all
-from celery.task.http import HttpDispatchTask
+from ..app import app_or_default, current_task as _current_task
+from ..local import Proxy
 
-__all__ = ["Task", "TaskSet", "PeriodicTask", "tasks", "discard_all",
-           "dmap", "dmap_async", "execute_remote", "ping", "HttpDispatchTask"]
+from .base import Task, PeriodicTask        # noqa
+from .sets import group, TaskSet, subtask   # noqa
+from .chords import chord                   # noqa
+from .control import discard_all            # noqa
+
+current = Proxy(_current_task)
 
 
-def dmap(fun, args, timeout=None):
-    """Distribute processing of the arguments and collect the results.
+def task(*args, **kwargs):
+    """Decorator to create a task class out of any callable.
 
-    Example
+    **Examples**
 
-        >>> from celery.task import dmap
-        >>> import operator
-        >>> dmap(operator.add, [[2, 2], [4, 4], [8, 8]])
-        [4, 8, 16]
+    .. code-block:: python
+
+        @task
+        def refresh_feed(url):
+            return Feed.objects.get(url=url).refresh()
+
+    With setting extra options and using retry.
+
+    .. code-block:: python
+
+        @task(max_retries=10)
+        def refresh_feed(url):
+            try:
+                return Feed.objects.get(url=url).refresh()
+            except socket.error, exc:
+                refresh_feed.retry(exc=exc)
+
+    Calling the resulting task:
+
+            >>> refresh_feed("http://example.com/rss") # Regular
+            <Feed: http://example.com/rss>
+            >>> refresh_feed.delay("http://example.com/rss") # Async
+            <AsyncResult: 8998d0f4-da0b-4669-ba03-d5ab5ac6ad5d>
+    """
+    kwargs.setdefault("accept_magic_kwargs", False)
+    return app_or_default().task(*args, **kwargs)
+
+
+def periodic_task(*args, **options):
+    """Decorator to create a task class out of any callable.
+
+        .. admonition:: Examples
+
+            .. code-block:: python
+
+                @task
+                def refresh_feed(url):
+                    return Feed.objects.get(url=url).refresh()
+
+            With setting extra options and using retry.
+
+            .. code-block:: python
+
+                from celery.task import current
+
+                @task(exchange="feeds")
+                def refresh_feed(url):
+                    try:
+                        return Feed.objects.get(url=url).refresh()
+                    except socket.error, exc:
+                        current.retry(exc=exc)
+
+            Calling the resulting task:
+
+                >>> refresh_feed("http://example.com/rss") # Regular
+                <Feed: http://example.com/rss>
+                >>> refresh_feed.delay("http://example.com/rss") # Async
+                <AsyncResult: 8998d0f4-da0b-4669-ba03-d5ab5ac6ad5d>
 
     """
-    return _dmap(fun, args, timeout)
+    return task(**dict({"base": PeriodicTask}, **options))
 
 
-def dmap_async(fun, args, timeout=None):
-    """Distribute processing of the arguments and collect the results
-    asynchronously.
-
-    :returns :class:`celery.result.AsyncResult`:
-
-    Example
-
-        >>> from celery.task import dmap_async
-        >>> import operator
-        >>> presult = dmap_async(operator.add, [[2, 2], [4, 4], [8, 8]])
-        >>> presult
-        <AsyncResult: 373550e8-b9a0-4666-bc61-ace01fa4f91d>
-        >>> presult.status
-        'SUCCESS'
-        >>> presult.result
-        [4, 8, 16]
-
-    """
-    return AsynchronousMapTask.delay(pickle.dumps(fun), args, timeout=timeout)
-
-
-def execute_remote(fun, *args, **kwargs):
-    """Execute arbitrary function/object remotely.
-
-    :param fun: A callable function or object.
-    :param \*args: Positional arguments to apply to the function.
-    :param \*\*kwargs: Keyword arguments to apply to the function.
-
-    The object must be picklable, so you can't use lambdas or functions
-    defined in the REPL (the objects must have an associated module).
-
-    :returns class:`celery.result.AsyncResult`:
-
-    """
-    return ExecuteRemoteTask.delay(pickle.dumps(fun), args, kwargs)
-
-
-def ping():
-    """Test if the server is alive.
-
-    Example:
-
-        >>> from celery.task import ping
-        >>> ping()
-        'pong'
-    """
-    return PingTask.apply_async().get()
+@task(name="celery.backend_cleanup")
+def backend_cleanup():
+    backend_cleanup.backend.cleanup()

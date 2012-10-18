@@ -1,15 +1,27 @@
-import unittest2 as unittest
+from __future__ import absolute_import
+from __future__ import with_statement
+
+import sys
 
 from datetime import datetime
 
-from celery.exceptions import ImproperlyConfigured
+from nose import SkipTest
 
-from celery import conf
 from celery import states
-from celery.backends.database import DatabaseBackend
-from celery.db.models import Task, TaskSet
+from celery.app import app_or_default
+from celery.exceptions import ImproperlyConfigured
 from celery.result import AsyncResult
-from celery.utils import gen_unique_id
+from celery.utils import uuid
+
+from celery.tests.utils import Case, mask_modules
+
+try:
+    import sqlalchemy  # noqa
+except ImportError:
+    DatabaseBackend = Task = TaskSet = None
+else:
+    from celery.backends.database import DatabaseBackend
+    from celery.db.models import Task, TaskSet
 
 
 class SomeClass(object):
@@ -18,14 +30,47 @@ class SomeClass(object):
         self.data = data
 
 
-class test_DatabaseBackend(unittest.TestCase):
+class test_DatabaseBackend(Case):
+
+    def setUp(self):
+        if sys.platform.startswith("java"):
+            raise SkipTest("SQLite not available on Jython")
+        if hasattr(sys, "pypy_version_info"):
+            raise SkipTest("Known to not pass on PyPy")
+        if DatabaseBackend is None:
+            raise SkipTest("sqlalchemy not installed")
+
+    def test_missing_SQLAlchemy_raises_ImproperlyConfigured(self):
+        with mask_modules("sqlalchemy"):
+            from celery.backends.database import _sqlalchemy_installed
+            with self.assertRaises(ImproperlyConfigured):
+                _sqlalchemy_installed()
+
+    def test_pickle_hack_for_sqla_05(self):
+        import sqlalchemy as sa
+        from celery.db import session
+        prev_base = session.ResultModelBase
+        prev_ver, sa.__version__ = sa.__version__, "0.5.0"
+        prev_models = sys.modules.pop("celery.db.models", None)
+        try:
+            from sqlalchemy.ext.declarative import declarative_base
+            session.ResultModelBase = declarative_base()
+            from celery.db.dfd042c7 import PickleType as Type1
+            from celery.db.models import PickleType as Type2
+            self.assertIs(Type1, Type2)
+        finally:
+            sys.modules["celery.db.models"] = prev_models
+            sa.__version__ = prev_ver
+            session.ResultModelBase = prev_base
 
     def test_missing_dburi_raises_ImproperlyConfigured(self):
-        prev, conf.RESULT_DBURI = conf.RESULT_DBURI, None
+        conf = app_or_default().conf
+        prev, conf.CELERY_RESULT_DBURI = conf.CELERY_RESULT_DBURI, None
         try:
-            self.assertRaises(ImproperlyConfigured, DatabaseBackend)
+            with self.assertRaises(ImproperlyConfigured):
+                DatabaseBackend()
         finally:
-            conf.RESULT_DBURI = prev
+            conf.CELERY_RESULT_DBURI = prev
 
     def test_missing_task_id_is_PENDING(self):
         tb = DatabaseBackend()
@@ -43,7 +88,7 @@ class test_DatabaseBackend(unittest.TestCase):
     def test_mark_as_done(self):
         tb = DatabaseBackend()
 
-        tid = gen_unique_id()
+        tid = uuid()
 
         self.assertEqual(tb.get_status(tid), states.PENDING)
         self.assertIsNone(tb.get_result(tid))
@@ -55,7 +100,7 @@ class test_DatabaseBackend(unittest.TestCase):
     def test_is_pickled(self):
         tb = DatabaseBackend()
 
-        tid2 = gen_unique_id()
+        tid2 = uuid()
         result = {"foo": "baz", "bar": SomeClass(12345)}
         tb.mark_as_done(tid2, result)
         # is serialized properly.
@@ -65,25 +110,25 @@ class test_DatabaseBackend(unittest.TestCase):
 
     def test_mark_as_started(self):
         tb = DatabaseBackend()
-        tid = gen_unique_id()
+        tid = uuid()
         tb.mark_as_started(tid)
         self.assertEqual(tb.get_status(tid), states.STARTED)
 
     def test_mark_as_revoked(self):
         tb = DatabaseBackend()
-        tid = gen_unique_id()
+        tid = uuid()
         tb.mark_as_revoked(tid)
         self.assertEqual(tb.get_status(tid), states.REVOKED)
 
     def test_mark_as_retry(self):
         tb = DatabaseBackend()
-        tid = gen_unique_id()
+        tid = uuid()
         try:
             raise KeyError("foo")
         except KeyError, exception:
             import traceback
             trace = "\n".join(traceback.format_stack())
-        tb.mark_as_retry(tid, exception, traceback=trace)
+            tb.mark_as_retry(tid, exception, traceback=trace)
         self.assertEqual(tb.get_status(tid), states.RETRY)
         self.assertIsInstance(tb.get_result(tid), KeyError)
         self.assertEqual(tb.get_traceback(tid), trace)
@@ -91,20 +136,20 @@ class test_DatabaseBackend(unittest.TestCase):
     def test_mark_as_failure(self):
         tb = DatabaseBackend()
 
-        tid3 = gen_unique_id()
+        tid3 = uuid()
         try:
             raise KeyError("foo")
         except KeyError, exception:
             import traceback
             trace = "\n".join(traceback.format_stack())
-        tb.mark_as_failure(tid3, exception, traceback=trace)
+            tb.mark_as_failure(tid3, exception, traceback=trace)
         self.assertEqual(tb.get_status(tid3), states.FAILURE)
         self.assertIsInstance(tb.get_result(tid3), KeyError)
         self.assertEqual(tb.get_traceback(tid3), trace)
 
     def test_forget(self):
         tb = DatabaseBackend(backend="memory://")
-        tid = gen_unique_id()
+        tid = uuid()
         tb.mark_as_done(tid, {"foo": "bar"})
         x = AsyncResult(tid)
         x.forget()
@@ -114,35 +159,35 @@ class test_DatabaseBackend(unittest.TestCase):
         tb = DatabaseBackend()
         tb.process_cleanup()
 
-    def test_save___restore_taskset(self):
+    def test_save__restore__delete_taskset(self):
         tb = DatabaseBackend()
 
-        tid = gen_unique_id()
+        tid = uuid()
         res = {u"something": "special"}
         self.assertEqual(tb.save_taskset(tid, res), res)
 
         res2 = tb.restore_taskset(tid)
         self.assertEqual(res2, res)
 
+        tb.delete_taskset(tid)
+        self.assertIsNone(tb.restore_taskset(tid))
+
         self.assertIsNone(tb.restore_taskset("xxx-nonexisting-id"))
 
     def test_cleanup(self):
         tb = DatabaseBackend()
         for i in range(10):
-            tb.mark_as_done(gen_unique_id(), 42)
-            tb.save_taskset(gen_unique_id(), {"foo": "bar"})
+            tb.mark_as_done(uuid(), 42)
+            tb.save_taskset(uuid(), {"foo": "bar"})
         s = tb.ResultSession()
         for t in s.query(Task).all():
-            t.date_done = datetime.now() - tb.result_expires * 2
+            t.date_done = datetime.now() - tb.expires * 2
         for t in s.query(TaskSet).all():
-            t.date_done = datetime.now() - tb.result_expires * 2
+            t.date_done = datetime.now() - tb.expires * 2
         s.commit()
         s.close()
 
         tb.cleanup()
-        s2 = tb.ResultSession()
-        self.assertEqual(s2.query(Task).count(), 0)
-        self.assertEqual(s2.query(TaskSet).count(), 0)
 
     def test_Task__repr__(self):
         self.assertIn("foo", repr(Task("foo")))

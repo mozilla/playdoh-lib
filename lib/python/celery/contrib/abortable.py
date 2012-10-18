@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 =========================
 Abortable tasks overview
@@ -29,7 +30,7 @@ In the consumer:
 
    from celery.contrib.abortable import AbortableTask
 
-   def MyLongRunningTask(AbortableTask):
+   class MyLongRunningTask(AbortableTask):
 
        def run(self, **kwargs):
            logger = self.get_logger(**kwargs)
@@ -41,7 +42,7 @@ In the consumer:
                        # Respect the aborted status and terminate
                        # gracefully
                        logger.warning("Task aborted.")
-                       return None
+                       return
                y = do_something_expensive(x)
                results.append(y)
            logger.info("Task finished.")
@@ -65,9 +66,9 @@ In the producer:
 
        ...
 
-After the ``async_result.abort()`` call, the task execution is not
+After the `async_result.abort()` call, the task execution is not
 aborted immediately. In fact, it is not guaranteed to abort at all. Keep
-checking the ``async_result`` status, or call ``async_result.wait()`` to
+checking the `async_result` status, or call `async_result.wait()` to
 have it block until the task is finished.
 
 .. note::
@@ -78,6 +79,8 @@ have it block until the task is finished.
    database backends.
 
 """
+from __future__ import absolute_import
+
 from celery.task.base import Task
 from celery.result import AsyncResult
 
@@ -101,8 +104,8 @@ ABORTED = "ABORTED"
 class AbortableAsyncResult(AsyncResult):
     """Represents a abortable result.
 
-    Specifically, this gives the ``AsyncResult`` a :meth:`abort()` method,
-    which sets the state of the underlying Task to ``"ABORTED"``.
+    Specifically, this gives the `AsyncResult` a :meth:`abort()` method,
+    which sets the state of the underlying Task to `"ABORTED"`.
 
     """
 
@@ -155,7 +158,8 @@ class AbortableTask(Task):
         often (for performance).
 
         """
-        result = self.AsyncResult(kwargs["task_id"])
+        task_id = kwargs.get('task_id', self.request.id)
+        result = self.AsyncResult(task_id)
         if not isinstance(result, AbortableAsyncResult):
             return False
         return result.is_aborted()

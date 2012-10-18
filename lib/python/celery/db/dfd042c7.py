@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 dfd042c7
 
@@ -5,6 +6,8 @@ SQLAlchemy 0.5.8 version of a805d4bd, see the docstring of that module
 for an explanation of this workaround.
 
 """
+from __future__ import absolute_import
+
 from sqlalchemy.types import PickleType as _PickleType
 from sqlalchemy import util
 
@@ -14,15 +17,13 @@ class PickleType(_PickleType):
     def process_bind_param(self, value, dialect):
         dumps = self.pickler.dumps
         protocol = self.protocol
-        if value is None:
-            return None
-        return dumps(value, protocol)
+        if value is not None:
+            return dumps(value, protocol)
 
     def process_result_value(self, value, dialect):
         loads = self.pickler.loads
-        if value is None:
-            return None
-        return loads(str(value))
+        if value is not None:
+            return loads(str(value))
 
     def copy_value(self, value):
         if self.mutable:

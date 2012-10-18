@@ -1,73 +1,89 @@
-from __future__ import generators
+# -*- coding: utf-8 -*-
+"""
+    celery.utils
+    ~~~~~~~~~~~~
 
-import time
+    Utility functions.
+
+    :copyright: (c) 2009 - 2012 by Ask Solem.
+    :license: BSD, see LICENSE for more details.
+
+"""
+from __future__ import absolute_import
+from __future__ import with_statement
+
+import os
+import sys
 import operator
-try:
-    import ctypes
-except ImportError:
-    ctypes = None
+import imp as _imp
 import importlib
 import logging
+import threading
+import traceback
+import warnings
 
-from datetime import datetime
-from uuid import UUID, uuid4, _uuid_generate_random
+from contextlib import contextmanager
+from functools import partial, wraps
 from inspect import getargspec
 from itertools import islice
+from pprint import pprint
 
-from carrot.utils import rpartition
-from dateutil.parser import parse as parse_iso8601
+from kombu.utils import cached_property, gen_unique_id, kwdict  # noqa
+from kombu.utils import reprcall, reprkwargs                    # noqa
+from kombu.utils.functional import promise, maybe_promise       # noqa
+uuid = gen_unique_id
 
-from celery.utils.compat import all, any, defaultdict
-from celery.utils.timeutils import timedelta_seconds        # was here before
-from celery.utils.functional import curry
-
+from ..exceptions import CPendingDeprecationWarning, CDeprecationWarning
+from .compat import StringIO, reload
 
 LOG_LEVELS = dict(logging._levelNames)
 LOG_LEVELS["FATAL"] = logging.FATAL
 LOG_LEVELS[logging.FATAL] = "FATAL"
 
+PENDING_DEPRECATION_FMT = """
+    %(description)s is scheduled for deprecation in \
+    version %(deprecation)s and removal in version v%(removal)s. \
+    %(alternative)s
+"""
 
-class promise(object):
-    """A promise.
+DEPRECATION_FMT = """
+    %(description)s is deprecated and scheduled for removal in
+    version %(removal)s. %(alternative)s
+"""
 
-    Evaluated when called or if the :meth:`evaluate` method is called.
-    The function is evaluated on every access, so the value is not
-    memoized (see :class:`mpromise`).
 
-    Overloaded operations that will evaluate the promise:
-        :meth:`__str__`, :meth:`__repr__`, :meth:`__cmp__`.
+def warn_deprecated(description=None, deprecation=None, removal=None,
+        alternative=None):
+    ctx = {"description": description,
+           "deprecation": deprecation, "removal": removal,
+           "alternative": alternative}
+    if deprecation is not None:
+        w = CPendingDeprecationWarning(PENDING_DEPRECATION_FMT % ctx)
+    else:
+        w = CDeprecationWarning(DEPRECATION_FMT % ctx)
+    warnings.warn(w)
 
-    """
 
-    def __init__(self, fun, *args, **kwargs):
-        self._fun = fun
-        self._args = args
-        self._kwargs = kwargs
+def deprecated(description=None, deprecation=None, removal=None,
+        alternative=None):
 
-    def __call__(self):
-        return self.evaluate()
+    def _inner(fun):
 
-    def evaluate(self):
-        return self._fun(*self._args, **self._kwargs)
+        @wraps(fun)
+        def __inner(*args, **kwargs):
+            warn_deprecated(description=description or qualname(fun),
+                            deprecation=deprecation,
+                            removal=removal,
+                            alternative=alternative)
+            return fun(*args, **kwargs)
+        return __inner
+    return _inner
 
-    def __str__(self):
-        return str(self())
 
-    def __repr__(self):
-        return repr(self())
-
-    def __cmp__(self, rhs):
-        if isinstance(rhs, self.__class__):
-            return -cmp(rhs, self())
-        return cmp(self(), rhs)
-
-    def __deepcopy__(self, memo):
-        memo[id(self)] = self
-        return self
-
-    def __reduce__(self):
-        return (self.__class__, (self._fun, ), {"_args": self._args,
-                                                "_kwargs": self._kwargs})
+def lpmerge(L, R):
+    """Left precedent dictionary merge.  Keeps values from `l`, if the value
+    in `r` is :const:`None`."""
+    return dict(L, **dict((k, v) for k, v in R.iteritems() if v is not None))
 
 
 class mpromise(promise):
@@ -91,13 +107,6 @@ class mpromise(promise):
         return self._value
 
 
-def maybe_promise(value):
-    """Evaluates if the value is a promise."""
-    if isinstance(value, promise):
-        return value.evaluate()
-    return value
-
-
 def noop(*args, **kwargs):
     """No operation.
 
@@ -107,28 +116,8 @@ def noop(*args, **kwargs):
     pass
 
 
-def maybe_iso8601(dt):
-    """``Either datetime | str -> datetime or None -> None``"""
-    if not dt:
-        return
-    if isinstance(dt, datetime):
-        return dt
-    return parse_iso8601(dt)
-
-
-def kwdict(kwargs):
-    """Make sure keyword arguments are not in unicode.
-
-    This should be fixed in newer Python versions,
-      see: http://bugs.python.org/issue4978.
-
-    """
-    return dict((key.encode("utf-8"), value)
-                    for key, value in kwargs.items())
-
-
 def first(predicate, iterable):
-    """Returns the first element in ``iterable`` that ``predicate`` returns a
+    """Returns the first element in `iterable` that `predicate` returns a
     :const:`True` value for."""
     for item in iterable:
         if predicate(item):
@@ -155,7 +144,7 @@ def firstmethod(method):
 
 
 def chunks(it, n):
-    """Split an iterator into chunks with ``n`` elements each.
+    """Split an iterator into chunks with `n` elements each.
 
     Examples
 
@@ -172,20 +161,6 @@ def chunks(it, n):
     """
     for first in it:
         yield [first] + list(islice(it, n - 1))
-
-
-def gen_unique_id():
-    """Generate a unique id, having - hopefully - a very small chance of
-    collission.
-
-    For now this is provided by :func:`uuid.uuid4`.
-    """
-    # Workaround for http://bugs.python.org/issue4607
-    if ctypes and _uuid_generate_random:
-        buffer = ctypes.create_string_buffer(16)
-        _uuid_generate_random(buffer)
-        return str(UUID(bytes=buffer.raw))
-    return str(uuid4())
 
 
 def padlist(container, size, default=None):
@@ -213,12 +188,6 @@ def is_iterable(obj):
     return True
 
 
-def mitemgetter(*items):
-    """Like :func:`operator.itemgetter` but returns :const:`None`
-    on missing items instead of raising :exc:`KeyError`."""
-    return lambda container: map(container.get, items)
-
-
 def mattrgetter(*attrs):
     """Like :func:`operator.itemgetter` but returns :const:`None` on missing
     attributes instead of raising :exc:`AttributeError`."""
@@ -226,70 +195,27 @@ def mattrgetter(*attrs):
                                 for attr in attrs)
 
 
-def get_full_cls_name(cls):
-    """With a class, get its full module and class name."""
-    return ".".join([cls.__module__,
-                     cls.__name__])
+if sys.version_info >= (3, 3):
 
+    def qualname(obj):
+        return obj.__qualname__
 
-def repeatlast(it):
-    """Iterate over all elements in the iterator, and when its exhausted
-    yield the last value infinitely."""
-    for item in it:
-        yield item
-    while 1:                                            # pragma: no cover
-        yield item
+else:
 
+    def qualname(obj):  # noqa
+        if not hasattr(obj, "__name__") and hasattr(obj, "__class__"):
+            return qualname(obj.__class__)
 
-def retry_over_time(fun, catch, args=[], kwargs={}, errback=noop,
-        max_retries=None, interval_start=2, interval_step=2, interval_max=30):
-    """Retry the function over and over until max retries is exceeded.
-
-    For each retry we sleep a for a while before we try again, this interval
-    is increased for every retry until the max seconds is reached.
-
-    :param fun: The function to try
-    :param catch: Exceptions to catch, can be either tuple or a single
-        exception class.
-    :keyword args: Positional arguments passed on to the function.
-    :keyword kwargs: Keyword arguments passed on to the function.
-    :keyword errback: Callback for when an exception in ``catch`` is raised.
-        The callback must take two arguments: ``exc`` and ``interval``, where
-        ``exc`` is the exception instance, and ``interval`` is the time in
-        seconds to sleep next..
-    :keyword max_retries: Maximum number of retries before we give up.
-        If this is not set, we will retry forever.
-    :keyword interval_start: How long (in seconds) we start sleeping between
-        retries.
-    :keyword interval_step: By how much the interval is increased for each
-        retry.
-    :keyword interval_max: Maximum number of seconds to sleep between retries.
-
-    """
-    retries = 0
-    interval_range = xrange(interval_start,
-                            interval_max + interval_start,
-                            interval_step)
-
-    for interval in repeatlast(interval_range):
-        try:
-            retval = fun(*args, **kwargs)
-        except catch, exc:
-            if max_retries and retries > max_retries:
-                raise
-            errback(exc, interval)
-            retries += 1
-            time.sleep(interval)
-        else:
-            return retval
+        return '.'.join([obj.__module__, obj.__name__])
+get_full_cls_name = qualname  # XXX Compat
 
 
 def fun_takes_kwargs(fun, kwlist=[]):
     """With a function, and a list of keyword arguments, returns arguments
     in the list which the function takes.
 
-    If the object has an ``argspec`` attribute that is used instead
-    of using the :meth:`inspect.getargspec`` introspection.
+    If the object has an `argspec` attribute that is used instead
+    of using the :meth:`inspect.getargspec` introspection.
 
     :param fun: The function to inspect arguments of.
     :param kwlist: The list of keyword arguments.
@@ -310,10 +236,11 @@ def fun_takes_kwargs(fun, kwlist=[]):
     args, _varargs, keywords, _defaults = argspec
     if keywords != None:
         return kwlist
-    return filter(curry(operator.contains, args), kwlist)
+    return filter(partial(operator.contains, args), kwlist)
 
 
-def get_cls_by_name(name, aliases={}):
+def get_cls_by_name(name, aliases={}, imp=None, package=None,
+        sep='.', **kwargs):
     """Get class by name.
 
     The name should be the full dot-separated path to the class::
@@ -325,7 +252,11 @@ def get_cls_by_name(name, aliases={}):
         celery.concurrency.processes.TaskPool
                                     ^- class name
 
-    If ``aliases`` is provided, a dict containing short name/long name
+    or using ':' to separate module and symbol::
+
+        celery.concurrency.processes:TaskPool
+
+    If `aliases` is provided, a dict containing short name/long name
     mappings, the name is looked up in the aliases first.
 
     Examples:
@@ -343,14 +274,25 @@ def get_cls_by_name(name, aliases={}):
         True
 
     """
+    if imp is None:
+        imp = importlib.import_module
 
     if not isinstance(name, basestring):
-        return name                                     # already a class
+        return name                                 # already a class
 
     name = aliases.get(name) or name
-    module_name, _, cls_name = rpartition(name, ".")
-    module = importlib.import_module(module_name)
+    sep = ':' if ':' in name else sep
+    module_name, _, cls_name = name.rpartition(sep)
+    if not module_name and package:
+        module_name = package
+    try:
+        module = imp(module_name, package=package, **kwargs)
+    except ValueError, exc:
+        raise ValueError, ValueError(
+                "Couldn't import %r: %s" % (name, exc)), sys.exc_info()[2]
     return getattr(module, cls_name)
+
+get_symbol_by_name = get_cls_by_name
 
 
 def instantiate(name, *args, **kwargs):
@@ -369,6 +311,12 @@ def truncate_text(text, maxlen=128, suffix="..."):
     return text
 
 
+def pluralize(n, text, suffix='s'):
+    if n > 1:
+        return text + suffix
+    return text
+
+
 def abbr(S, max, ellipsis="..."):
     if S is None:
         return "???"
@@ -381,7 +329,136 @@ def abbrtask(S, max):
     if S is None:
         return "???"
     if len(S) > max:
-        module, _, cls = rpartition(S, ".")
-        module = abbr(module, max - len(cls), False)
+        module, _, cls = S.rpartition(".")
+        module = abbr(module, max - len(cls) - 3, False)
         return module + "[.]" + cls
     return S
+
+
+def isatty(fh):
+    # Fixes bug with mod_wsgi:
+    #   mod_wsgi.Log object has no attribute isatty.
+    return getattr(fh, "isatty", None) and fh.isatty()
+
+
+def textindent(t, indent=0):
+        """Indent text."""
+        return "\n".join(" " * indent + p for p in t.split("\n"))
+
+
+@contextmanager
+def cwd_in_path():
+    cwd = os.getcwd()
+    if cwd in sys.path:
+        yield
+    else:
+        sys.path.insert(0, cwd)
+        try:
+            yield cwd
+        finally:
+            try:
+                sys.path.remove(cwd)
+            except ValueError:
+                pass
+
+
+class NotAPackage(Exception):
+    pass
+
+
+def find_module(module, path=None, imp=None):
+    """Version of :func:`imp.find_module` supporting dots."""
+    if imp is None:
+        imp = importlib.import_module
+    with cwd_in_path():
+        if "." in module:
+            last = None
+            parts = module.split(".")
+            for i, part in enumerate(parts[:-1]):
+                mpart = imp(".".join(parts[:i + 1]))
+                try:
+                    path = mpart.__path__
+                except AttributeError:
+                    raise NotAPackage(module)
+                last = _imp.find_module(parts[i + 1], path)
+            return last
+        return _imp.find_module(module)
+
+
+def import_from_cwd(module, imp=None, package=None):
+    """Import module, but make sure it finds modules
+    located in the current directory.
+
+    Modules located in the current directory has
+    precedence over modules located in `sys.path`.
+    """
+    if imp is None:
+        imp = importlib.import_module
+    with cwd_in_path():
+        return imp(module, package=package)
+
+
+def reload_from_cwd(module, reloader=None):
+    if reloader is None:
+        reloader = reload
+    with cwd_in_path():
+        return reloader(module)
+
+
+def cry():  # pragma: no cover
+    """Return stacktrace of all active threads.
+
+    From https://gist.github.com/737056
+
+    """
+    tmap = {}
+    main_thread = None
+    # get a map of threads by their ID so we can print their names
+    # during the traceback dump
+    for t in threading.enumerate():
+        if getattr(t, "ident", None):
+            tmap[t.ident] = t
+        else:
+            main_thread = t
+
+    out = StringIO()
+    sep = "=" * 49 + "\n"
+    for tid, frame in sys._current_frames().iteritems():
+        thread = tmap.get(tid, main_thread)
+        if not thread:
+            # skip old junk (left-overs from a fork)
+            continue
+        out.write("%s\n" % (thread.getName(), ))
+        out.write(sep)
+        traceback.print_stack(frame, file=out)
+        out.write(sep)
+        out.write("LOCAL VARIABLES\n")
+        out.write(sep)
+        pprint(frame.f_locals, stream=out)
+        out.write("\n\n")
+    return out.getvalue()
+
+
+def uniq(it):
+    seen = set()
+    for obj in it:
+        if obj not in seen:
+            yield obj
+            seen.add(obj)
+
+
+def maybe_reraise():
+    """Reraise if an exception is currently being handled, or return
+    otherwise."""
+    type_, exc, tb = sys.exc_info()
+    try:
+        if tb:
+            raise type_, exc, tb
+    finally:
+        # see http://docs.python.org/library/sys.html#sys.exc_info
+        del(tb)
+
+
+def module_file(module):
+    name = module.__file__
+    return name[:-1] if name.endswith(".pyc") else name
