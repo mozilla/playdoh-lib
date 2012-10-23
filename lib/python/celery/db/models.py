@@ -1,14 +1,19 @@
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+
 from datetime import datetime
 
 import sqlalchemy as sa
 
-from celery import states
-from celery.db.session import ResultModelBase
+from .. import states
+
+from .session import ResultModelBase
+
 # See docstring of a805d4bd for an explanation for this workaround ;)
 if sa.__version__.startswith('0.5'):
-    from celery.db.dfd042c7 import PickleType
+    from .dfd042c7 import PickleType
 else:
-    from celery.db.a805d4bd import PickleType
+    from .a805d4bd import PickleType  # noqa
 
 
 class Task(ResultModelBase):
@@ -19,11 +24,11 @@ class Task(ResultModelBase):
     id = sa.Column(sa.Integer, sa.Sequence("task_id_sequence"),
                    primary_key=True,
                    autoincrement=True)
-    task_id = sa.Column(sa.String(255))
+    task_id = sa.Column(sa.String(255), unique=True)
     status = sa.Column(sa.String(50), default=states.PENDING)
     result = sa.Column(PickleType, nullable=True)
-    date_done = sa.Column(sa.DateTime, default=datetime.now,
-                       onupdate=datetime.now, nullable=True)
+    date_done = sa.Column(sa.DateTime, default=datetime.utcnow,
+                       onupdate=datetime.utcnow, nullable=True)
     traceback = sa.Column(sa.Text, nullable=True)
 
     def __init__(self, task_id):
@@ -33,7 +38,8 @@ class Task(ResultModelBase):
         return {"task_id": self.task_id,
                 "status": self.status,
                 "result": self.result,
-                "traceback": self.traceback}
+                "traceback": self.traceback,
+                "date_done": self.date_done}
 
     def __repr__(self):
         return "<Task %s state: %s>" % (self.task_id, self.status)
@@ -46,9 +52,9 @@ class TaskSet(ResultModelBase):
 
     id = sa.Column(sa.Integer, sa.Sequence("taskset_id_sequence"),
                 autoincrement=True, primary_key=True)
-    taskset_id = sa.Column(sa.String(255))
+    taskset_id = sa.Column(sa.String(255), unique=True)
     result = sa.Column(sa.PickleType, nullable=True)
-    date_done = sa.Column(sa.DateTime, default=datetime.now,
+    date_done = sa.Column(sa.DateTime, default=datetime.utcnow,
                        nullable=True)
 
     def __init__(self, taskset_id, result):
@@ -57,7 +63,8 @@ class TaskSet(ResultModelBase):
 
     def to_dict(self):
         return {"taskset_id": self.taskset_id,
-                "result": self.result}
+                "result": self.result,
+                "date_done": self.date_done}
 
     def __repr__(self):
         return u"<TaskSet: %s>" % (self.taskset_id, )

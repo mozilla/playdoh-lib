@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 
 Examples
@@ -5,17 +6,24 @@ Examples
 
 ::
 
-    # Advanced example starting 10 workers in the background:
-    #   * Three of the workers processes the images and video queue
-    #   * Two of the workers processes the data queue with loglevel DEBUG
-    #   * the rest processes the default' queue.
-    $ celeryd-multi start 10 -l INFO -Q:1-3 images,video -Q:4,5:data
-        -Q default -L:4,5 DEBUG
+    # Single worker with explicit name and events enabled.
+    $ celeryd-multi start Leslie -E
 
-    # You can show the commands necessary to start the workers with
-    # the "show" command:
-    $ celeryd-multi show 10 -l INFO -Q:1-3 images,video -Q:4,5:data
-        -Q default -L:4,5 DEBUG
+    # Pidfiles and logfiles are stored in the current directory
+    # by default.  Use --pidfile and --logfile argument to change
+    # this.  The abbreviation %n will be expanded to the current
+    # node name.
+    $ celeryd-multi start Leslie -E --pidfile=/var/run/celery/%n.pid
+                                    --logfile=/var/log/celery/%n.log
+
+
+    # You need to add the same arguments when you restart,
+    # as these are not persisted anywhere.
+    $ celeryd-multi restart Leslie -E --pidfile=/var/run/celery/%n.pid
+                                      --logfile=/var/run/celery/%n.log
+
+    # To stop the node, you need to specify the same pidfile.
+    $ celeryd-multi stop Leslie --pidfile=/var/run/celery/%n.pid
 
     # 3 workers, with 3 processes each
     $ celeryd-multi start 3 -c 3
@@ -34,8 +42,20 @@ Examples
     celeryd -n celeryd1.worker.example.com -c 3
     celeryd -n celeryd2.worker.example.com -c 3
 
-    # Additionl options are added to each celeryd',
-    # but you can also modify the options for ranges of or single workers
+    # Advanced example starting 10 workers in the background:
+    #   * Three of the workers processes the images and video queue
+    #   * Two of the workers processes the data queue with loglevel DEBUG
+    #   * the rest processes the default' queue.
+    $ celeryd-multi start 10 -l INFO -Q:1-3 images,video -Q:4,5:data
+        -Q default -L:4,5 DEBUG
+
+    # You can show the commands necessary to start the workers with
+    # the "show" command:
+    $ celeryd-multi show 10 -l INFO -Q:1-3 images,video -Q:4,5:data
+        -Q default -L:4,5 DEBUG
+
+    # Additional options are added to each celeryd',
+    # but you can also modify the options for ranges of, or specific workers
 
     # 3 workers: Two with 3 processes, and one with 10 processes.
     $ celeryd-multi start 3 -c 3 -c:1 10
@@ -66,19 +86,26 @@ Examples
     celeryd -n xuzzy.myhost -c 3
 
 """
+from __future__ import absolute_import
+
+if __name__ == "__main__" and globals().get("__package__") is None:
+    __package__ = "celery.bin.celeryd_multi"
+
 import errno
 import os
-import shlex
 import signal
 import socket
 import sys
 
+from collections import defaultdict
 from subprocess import Popen
 from time import sleep
 
-from celery import __version__
-from celery.utils import term
-from celery.utils.compat import defaultdict
+from .. import __version__
+from ..platforms import shellsplit
+from ..utils import term
+from ..utils import pluralize
+from ..utils.encoding import from_utf8
 
 SIGNAMES = set(sig for sig in dir(signal)
                         if sig.startswith("SIG") and "_" not in sig)
@@ -99,6 +126,7 @@ usage: %(prog_name)s start <node1 node2 nodeN|range> [celeryd options]
 
 additional options (must appear after command name):
 
+    * --nosplash:   Don't display program info.
     * --quiet:      Don't show as much output.
     * --verbose:    Show more output.
     * --no-color:   Don't display colors.
@@ -112,10 +140,13 @@ def main():
 class MultiTool(object):
     retcode = 0  # Final exit code.
 
-    def __init__(self):
+    def __init__(self, env=None, fh=None):
+        self.fh = fh or sys.stderr
+        self.env = env
         self.commands = {"start": self.start,
                          "show": self.show,
                          "stop": self.stop,
+                         "stop_verify": self.stop_verify,
                          "restart": self.restart,
                          "kill": self.kill,
                          "names": self.names,
@@ -126,10 +157,13 @@ class MultiTool(object):
     def execute_from_commandline(self, argv, cmd="celeryd"):
         argv = list(argv)   # don't modify callers argv.
 
-        # Reserve the --quiet|-q/--verbose options.
+        # Reserve the --nosplash|--quiet|-q/--verbose options.
+        self.nosplash = False
         self.quiet = False
         self.verbose = False
         self.no_color = False
+        if "--nosplash" in argv:
+            self.nosplash = argv.pop(argv.index("--nosplash"))
         if "--quiet" in argv:
             self.quiet = argv.pop(argv.index("--quiet"))
         if "-q" in argv:
@@ -155,9 +189,12 @@ class MultiTool(object):
 
         return self.retcode
 
+    def say(self, m, newline=True):
+        self.fh.write("%s\n" % m if m else m)
+
     def names(self, argv, cmd):
         p = NamespacedOptionParser(argv)
-        print("\n".join(hostname
+        self.say("\n".join(hostname
                         for hostname, _, _ in multi_args(p, cmd)))
 
     def get(self, argv, cmd):
@@ -165,13 +202,13 @@ class MultiTool(object):
         p = NamespacedOptionParser(argv[1:])
         for name, worker, _ in multi_args(p, cmd):
             if name == wanted:
-                print(" ".join(worker))
+                self.say(" ".join(worker))
                 return
 
     def show(self, argv, cmd):
         p = NamespacedOptionParser(argv)
         self.note("> Starting nodes...")
-        print("\n".join(" ".join(worker)
+        self.say("\n".join(" ".join(worker)
                         for _, worker, _ in multi_args(p, cmd)))
 
     def start(self, argv, cmd):
@@ -237,7 +274,7 @@ class MultiTool(object):
             left = len(P)
             if left:
                 self.note(self.colored.blue("> Waiting for %s %s..." % (
-                    left, left > 1 and "nodes" or "node")), newline=False)
+                    left, pluralize(left, "node"))), newline=False)
 
         if retry:
             note_waiting()
@@ -257,11 +294,12 @@ class MultiTool(object):
             self.note("")
 
     def getpids(self, p, cmd, callback=None):
-        from celery import platforms
+        from .. import platforms
         pidfile_template = p.options.setdefault("--pidfile", "celeryd@%n.pid")
 
         nodes = []
         for nodename, argv, expander in multi_args(p, cmd):
+            pid = None
             pidfile = expander(pidfile_template)
             try:
                 pid = platforms.PIDFile(pidfile).read_pid()
@@ -311,26 +349,34 @@ class MultiTool(object):
         self._stop_nodes(p, cmd, retry=2, callback=on_node_shutdown)
         self.retval = int(any(retvals))
 
+    def stop_verify(self, argv, cmd):
+        self.splash()
+        p = NamespacedOptionParser(argv)
+        self.with_detacher_default_options(p)
+        return self._stop_nodes(p, cmd, retry=2)
+
     def expand(self, argv, cmd=None):
         template = argv[0]
         p = NamespacedOptionParser(argv[1:])
         for _, _, expander in multi_args(p, cmd):
-            print(expander(template))
+            self.say(expander(template))
 
     def help(self, argv, cmd=None):
-        say(__doc__)
+        self.say(__doc__)
 
     def usage(self):
         self.splash()
-        say(USAGE % {"prog_name": self.prog_name})
+        self.say(USAGE % {"prog_name": self.prog_name})
 
     def splash(self):
-        c = self.colored
-        self.note(c.cyan("celeryd-multi v%s" % __version__))
+        if not self.nosplash:
+            c = self.colored
+            self.note(c.cyan("celeryd-multi v%s" % __version__))
 
     def waitexec(self, argv, path=sys.executable):
-        argstr = shlex.split(" ".join([path] + list(argv)))
-        pipe = Popen(argstr)
+        args = " ".join([path] + list(argv))
+        argstr = shellsplit(from_utf8(args))
+        pipe = Popen(argstr, env=self.env)
         self.info("  %s" % " ".join(argstr))
         retcode = pipe.wait()
         if retcode < 0:
@@ -342,7 +388,7 @@ class MultiTool(object):
 
     def error(self, msg=None):
         if msg:
-            say(msg)
+            self.say(msg)
         self.usage()
         self.retcode = 1
         return 1
@@ -353,12 +399,13 @@ class MultiTool(object):
 
     def note(self, msg, newline=True):
         if not self.quiet:
-            say(str(msg), newline=newline)
+            self.say(str(msg), newline=newline)
 
 
 def multi_args(p, cmd="celeryd", append="", prefix="", suffix=""):
     names = p.values
     options = dict(p.options)
+    passthrough = p.passthrough
     ranges = len(names) == 1
     if ranges:
         try:
@@ -374,6 +421,8 @@ def multi_args(p, cmd="celeryd", append="", prefix="", suffix=""):
                    options.pop("-n", socket.gethostname()))
     prefix = options.pop("--prefix", prefix) or ""
     suffix = options.pop("--suffix", suffix) or "." + hostname
+    if suffix in ('""', "''"):
+        suffix = ""
 
     for ns_name, ns_opts in p.namespaces.items():
         if "," in ns_name or (ranges and "-" in ns_name):
@@ -387,7 +436,8 @@ def multi_args(p, cmd="celeryd", append="", prefix="", suffix=""):
                                 "%n": name})
         argv = ([expand(cmd)] +
                 [format_opt(opt, expand(value))
-                        for opt, value in p.optmerge(name, options).items()])
+                        for opt, value in p.optmerge(name, options).items()] +
+                [passthrough])
         if append:
             argv.append(expand(append))
         yield this_name, argv, expand
@@ -399,6 +449,7 @@ class NamespacedOptionParser(object):
         self.args = args
         self.options = {}
         self.values = []
+        self.passthrough = ""
         self.namespaces = defaultdict(lambda: {})
 
         self.parse()
@@ -408,7 +459,10 @@ class NamespacedOptionParser(object):
         pos = 0
         while pos < len(rargs):
             arg = rargs[pos]
-            if arg[0] == "-":
+            if arg == "--":
+                self.passthrough = " ".join(rargs[pos:])
+                break
+            elif arg[0] == "-":
                 if arg[1] == "-":
                     self.process_long_opt(arg[2:])
                 else:
@@ -477,10 +531,6 @@ def abbreviations(map):
         return ret
 
     return expand
-
-
-def say(m, newline=True):
-    sys.stderr.write(newline and "%s\n" % (m, ) or m)
 
 
 def findsig(args, default=signal.SIGTERM):

@@ -1,3 +1,6 @@
+from __future__ import absolute_import
+
+from collections import defaultdict
 from datetime import datetime, timedelta
 from time import time
 
@@ -8,14 +11,16 @@ from django.core.exceptions import ObjectDoesNotExist
 from celery import states
 from celery.events.state import Task
 from celery.events.snapshot import Polaroid
-from celery.utils import maybe_iso8601
-from celery.utils.compat import defaultdict
+from celery.utils.timeutils import maybe_iso8601
 
-from djcelery.models import WorkerState, TaskState
+from .models import WorkerState, TaskState
+from .utils import make_aware
 
 
 WORKER_UPDATE_FREQ = 60  # limit worker timestamp write freq.
 SUCCESS_STATES = frozenset([states.SUCCESS])
+
+# Expiry can be timedelta or None for never expire.
 EXPIRE_SUCCESS = getattr(settings, "CELERYCAM_EXPIRE_SUCCESS",
                          timedelta(days=1))
 EXPIRE_ERROR = getattr(settings, "CELERYCAM_EXPIRE_ERROR",
@@ -33,7 +38,7 @@ class Camera(Polaroid):
     expire_states = {
             SUCCESS_STATES: EXPIRE_SUCCESS,
             states.EXCEPTION_STATES: EXPIRE_ERROR,
-            states.UNREADY_STATES: EXPIRE_PENDING
+            states.UNREADY_STATES: EXPIRE_PENDING,
     }
 
     def __init__(self, *args, **kwargs):
@@ -45,7 +50,7 @@ class Camera(Polaroid):
             heartbeat = worker.heartbeats[-1]
         except IndexError:
             return
-        return datetime.fromtimestamp(heartbeat)
+        return make_aware(datetime.fromtimestamp(heartbeat))
 
     def handle_worker(self, (hostname, worker)):
         last_write, obj = self._last_worker_write[hostname]
@@ -67,7 +72,8 @@ class Camera(Polaroid):
                           "eta": maybe_iso8601(task.eta),
                           "expires": maybe_iso8601(task.expires),
                           "state": task.state,
-                          "tstamp": datetime.fromtimestamp(task.timestamp),
+                          "tstamp": make_aware(datetime.fromtimestamp(
+                                        task.timestamp)),
                           "result": task.result or task.exception,
                           "traceback": task.traceback,
                           "runtime": task.runtime,
@@ -128,8 +134,9 @@ class Camera(Polaroid):
         dirty = sum(self.TaskState.objects.expire_by_states(states, expires)
                         for states, expires in self.expire_states.items())
         if dirty:
-            self.debug("Cleanup: Marked %s objects as dirty." % (dirty, ))
+            self.logger.debug(
+                    "Cleanup: Marked %s objects as dirty." % (dirty, ))
             self.TaskState.objects.purge()
-            self.debug("Cleanup: %s objects purged." % (dirty, ))
+            self.logger.debug("Cleanup: %s objects purged." % (dirty, ))
             return dirty
         return 0

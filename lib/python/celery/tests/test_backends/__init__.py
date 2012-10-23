@@ -1,22 +1,30 @@
-import unittest2 as unittest
+from __future__ import absolute_import
+from __future__ import with_statement
 
 from celery import backends
 from celery.backends.amqp import AMQPBackend
-from celery.backends.database import DatabaseBackend
+from celery.backends.cache import CacheBackend
+from celery.tests.utils import Case
 
 
-class TestBackends(unittest.TestCase):
+class TestBackends(Case):
 
     def test_get_backend_aliases(self):
         expects = [("amqp", AMQPBackend),
-                   ("database", DatabaseBackend)]
+                   ("cache", CacheBackend)]
         for expect_name, expect_cls in expects:
             self.assertIsInstance(backends.get_backend_cls(expect_name)(),
                                   expect_cls)
 
-    def test_get_backend_cahe(self):
-        backends._backend_cache = {}
-        backends.get_backend_cls("amqp")
-        self.assertIn("amqp", backends._backend_cache)
-        amqp_backend = backends.get_backend_cls("amqp")
-        self.assertIs(amqp_backend, backends._backend_cache["amqp"])
+    def test_get_backend_cache(self):
+        backends.get_backend_cls.clear()
+        hits = backends.get_backend_cls.hits
+        misses = backends.get_backend_cls.misses
+        self.assertTrue(backends.get_backend_cls("amqp"))
+        self.assertEqual(backends.get_backend_cls.misses, misses + 1)
+        self.assertTrue(backends.get_backend_cls("amqp"))
+        self.assertEqual(backends.get_backend_cls.hits, hits + 1)
+
+    def test_unknown_backend(self):
+        with self.assertRaises(ValueError):
+            backends.get_backend_cls("fasodaopjeqijwqe")

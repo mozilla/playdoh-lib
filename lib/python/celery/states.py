@@ -1,4 +1,9 @@
+# -*- coding: utf-8 -*-
 """
+celery.states
+=============
+
+Built-in Task States.
 
 .. _states:
 
@@ -6,7 +11,6 @@ States
 ------
 
 See :ref:`task-states`.
-
 
 Sets
 ----
@@ -46,11 +50,16 @@ ALL_STATES
 
 Set of all possible states.
 
-"""
 
-## State precedence.
-# None represents the precedence of an unknown state.
-# Lower index means higher precedence.
+Misc.
+-----
+
+"""
+from __future__ import absolute_import
+
+#: State precedence.
+#: None represents the precedence of an unknown state.
+#: Lower index means higher precedence.
 PRECEDENCE = ["SUCCESS",
               "FAILURE",
               None,

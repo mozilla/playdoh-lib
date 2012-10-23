@@ -1,21 +1,24 @@
-from datetime import datetime, timedelta
+from __future__ import absolute_import
+
+from datetime import timedelta
 from time import time, mktime
 
 import django
 
+from django.conf import settings
+from django.core.exceptions import MultipleObjectsReturned, ValidationError
 from django.db import models
 from django.db.models import signals
 from django.utils.translation import ugettext_lazy as _
 
 from picklefield.fields import PickledObjectField
 
-from celery import conf
 from celery import schedules
 from celery import states
 from celery.utils.timeutils import timedelta_seconds
 
-from djcelery.managers import TaskManager, TaskSetManager, ExtendedManager
-from djcelery.managers import TaskStateManager, PeriodicTaskManager
+from . import managers
+from .utils import now
 
 HEARTBEAT_EXPIRE = 150      # 2 minutes, 30 seconds
 TASK_STATE_CHOICES = zip(states.ALL_STATES, states.ALL_STATES)
@@ -29,8 +32,9 @@ class TaskMeta(models.Model):
     result = PickledObjectField(null=True, default=None)
     date_done = models.DateTimeField(_(u"done at"), auto_now=True)
     traceback = models.TextField(_(u"traceback"), blank=True, null=True)
+    hidden = models.BooleanField(editable=False, default=False, db_index=True)
 
-    objects = TaskManager()
+    objects = managers.TaskManager()
 
     class Meta:
         """Model meta-data."""
@@ -54,8 +58,9 @@ class TaskSetMeta(models.Model):
     taskset_id = models.CharField(_(u"task id"), max_length=255, unique=True)
     result = PickledObjectField()
     date_done = models.DateTimeField(_(u"done at"), auto_now=True)
+    hidden = models.BooleanField(editable=False, default=False, db_index=True)
 
-    objects = TaskSetManager()
+    objects = managers.TaskSetManager()
 
     class Meta:
         """Model meta-data."""
@@ -93,14 +98,21 @@ class IntervalSchedule(models.Model):
         return schedules.schedule(timedelta(**{self.period: self.every}))
 
     @classmethod
-    def from_schedule(cls, schedule):
-        return cls(every=timedelta_seconds(schedule.run_every),
-                   period="seconds")
+    def from_schedule(cls, schedule, period="seconds"):
+        every = timedelta_seconds(schedule.run_every)
+        try:
+            return cls.objects.get(every=every, period=period)
+        except cls.DoesNotExist:
+            return cls(every=every, period=period)
+        except MultipleObjectsReturned:
+            cls.objects.filter(every=every, period=period).delete()
+            return cls(every=every, period=period)
 
     def __unicode__(self):
         if self.every == 1:
-            return _(u"every %s") % self.period[:-1]
-        return _(u"every %s %s") % (self.every, self.period)
+            return _(u"every %(period)s") % {"period": self.period[:-1]}
+        return _(u"every %(every)s %(period)s") % {"every": self.every,
+                                                   "period": self.period}
 
 
 class CrontabSchedule(models.Model):
@@ -128,7 +140,8 @@ class CrontabSchedule(models.Model):
     def schedule(self):
         return schedules.crontab(minute=self.minute,
                                 hour=self.hour,
-                                day_of_week=self.day_of_week)
+                                day_of_week=self.day_of_week,
+                                nowfun=now)
 
     @classmethod
     def from_schedule(cls, schedule):
@@ -141,14 +154,13 @@ class PeriodicTasks(models.Model):
     ident = models.SmallIntegerField(default=1, primary_key=True, unique=True)
     last_update = models.DateTimeField(null=False)
 
-    objects = ExtendedManager()
+    objects = managers.ExtendedManager()
 
     @classmethod
     def changed(cls, instance, **kwargs):
         if not instance.no_changes:
-            now = datetime.now()
             cls.objects.update_or_create(ident=1,
-                                         defaults={"last_update": now})
+                                         defaults={"last_update": now()})
 
     @classmethod
     def last_change(cls):
@@ -191,13 +203,23 @@ class PeriodicTask(models.Model):
                               editable=False, blank=True, null=True)
     total_run_count = models.PositiveIntegerField(default=0, editable=False)
     date_changed = models.DateTimeField(auto_now=True)
+    description = models.TextField(_("description"), blank=True)
 
-    objects = PeriodicTaskManager()
+    objects = managers.PeriodicTaskManager()
     no_changes = False
 
     class Meta:
         verbose_name = _(u"periodic task")
         verbose_name_plural = _(u"periodic tasks")
+
+    def validate_unique(self, *args, **kwargs):
+        super(PeriodicTask, self).validate_unique(*args, **kwargs)
+        if not self.interval and not self.crontab:
+            raise ValidationError(
+                {"interval": ["One of interval or crontab must be set."]})
+        if self.interval and self.crontab:
+            raise ValidationError(
+                {"crontab": ["Only one of interval or crontab must be set"]})
 
     def save(self, *args, **kwargs):
         self.exchange = self.exchange or None
@@ -228,7 +250,7 @@ class WorkerState(models.Model):
     last_heartbeat = models.DateTimeField(_(u"last heartbeat"), null=True,
                                           db_index=True)
 
-    objects = ExtendedManager()
+    objects = managers.ExtendedManager()
 
     class Meta:
         """Model meta-data."""
@@ -256,7 +278,7 @@ class WorkerState(models.Model):
 class TaskState(models.Model):
     state = models.CharField(_(u"state"),
                 max_length=64,
-                choices=TASK_STATE_CHOICES)
+                choices=TASK_STATE_CHOICES, db_index=True)
     task_id = models.CharField(_(u"UUID"),
                 max_length=36, unique=True)
     name = models.CharField(_(u"name"),
@@ -271,12 +293,12 @@ class TaskState(models.Model):
     traceback = models.TextField(_(u"traceback"), null=True)
     runtime = models.FloatField(_(u"execution time"), null=True,
                 help_text=_(u"in seconds if task successful"))
-    retries = models.IntegerField(_(u"number of retries"), default=0),
+    retries = models.IntegerField(_(u"number of retries"), default=0)
     worker = models.ForeignKey(WorkerState, null=True,
                                verbose_name=_("worker"))
-    hidden = models.BooleanField(editable=False, default=False)
+    hidden = models.BooleanField(editable=False, default=False, db_index=True)
 
-    objects = TaskStateManager()
+    objects = managers.TaskStateManager()
 
     class Meta:
         """Model meta-data."""
@@ -300,10 +322,10 @@ class TaskState(models.Model):
                                                  self.task_id,
                                                  self.tstamp)
 
-
 if (django.VERSION[0], django.VERSION[1]) >= (1, 1):
-    # keep models away from syncdb/reset if database backend is not
-    # being used.
-    if conf.RESULT_BACKEND != 'database':
-        TaskMeta._meta.managed = False
-        TaskSetMeta._meta.managed = False
+    # Keep models away from syncdb/reset if Django database
+    # backend is not being used.
+    if "database" not in (getattr(settings,
+                            "CELERY_RESULT_BACKEND", None) or "database"):
+        for result_model in (TaskMeta, TaskSetMeta):
+            result_model._meta.managed = False

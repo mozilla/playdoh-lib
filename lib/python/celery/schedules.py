@@ -1,33 +1,58 @@
-from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
-from pyparsing import (Word, Literal, ZeroOrMore, Optional,
-                       Group, StringEnd, alphas)
+# -*- coding: utf-8 -*-
+"""
+    celery.schedules
+    ~~~~~~~~~~~~~~~~
 
-from celery.utils import is_iterable
-from celery.utils.timeutils import timedelta_seconds, weekday, remaining
+    Schedules define the intervals at which periodic tasks
+    should run.
+
+    :copyright: (c) 2009 - 2012 by Ask Solem.
+    :license: BSD, see LICENSE for more details.
+
+"""
+from __future__ import absolute_import
+
+import re
+
+from datetime import timedelta
+from dateutil.relativedelta import relativedelta
+
+from . import current_app
+from .utils import is_iterable
+from .utils.timeutils import (timedelta_seconds, weekday, maybe_timedelta,
+                              remaining, humanize_seconds)
+
+
+class ParseException(Exception):
+    """Raised by crontab_parser when the input can't be parsed."""
 
 
 class schedule(object):
     relative = False
 
-    def __init__(self, run_every=None, relative=False):
-        self.run_every = run_every
+    def __init__(self, run_every=None, relative=False, nowfun=None):
+        self.run_every = maybe_timedelta(run_every)
         self.relative = relative
+        self.nowfun = nowfun
+
+    def now(self):
+        return (self.nowfun or current_app.now)()
 
     def remaining_estimate(self, last_run_at):
         """Returns when the periodic task should run next as a timedelta."""
-        return remaining(last_run_at, self.run_every, relative=self.relative)
+        return remaining(last_run_at, self.run_every, relative=self.relative,
+                         now=self.now())
 
     def is_due(self, last_run_at):
-        """Returns tuple of two items ``(is_due, next_time_to_run)``,
+        """Returns tuple of two items `(is_due, next_time_to_run)`,
         where next time to run is in seconds.
 
         e.g.
 
-        * ``(True, 20)``, means the task should be run now, and the next
+        * `(True, 20)`, means the task should be run now, and the next
             time to run is in 20 seconds.
 
-        * ``(False, 12)``, means the task should be run in 12 seconds.
+        * `(False, 12)`, means the task should be run in 12 seconds.
 
         You can override this to decide the interval at runtime,
         but keep in mind the value of :setting:`CELERYBEAT_MAX_LOOP_INTERVAL`,
@@ -43,13 +68,24 @@ class schedule(object):
         rem_delta = self.remaining_estimate(last_run_at)
         rem = timedelta_seconds(rem_delta)
         if rem == 0:
-            return True, timedelta_seconds(self.run_every)
+            return True, self.seconds
         return False, rem
+
+    def __repr__(self):
+        return "<freq: %s>" % self.human_seconds
 
     def __eq__(self, other):
         if isinstance(other, schedule):
             return self.run_every == other.run_every
         return self.run_every == other
+
+    @property
+    def seconds(self):
+        return timedelta_seconds(self.run_every)
+
+    @property
+    def human_seconds(self):
+        return humanize_seconds(self.seconds)
 
 
 class crontab_parser(object):
@@ -78,74 +114,70 @@ class crontab_parser(object):
         [0, 1, 2, 3, 4, 5, 6]
 
     """
+    ParseException = ParseException
+
+    _range = r'(\w+?)-(\w+)'
+    _steps = r'/(\w+)?'
+    _star = r'\*'
 
     def __init__(self, max_=60):
-        # define the grammar structure
-        digits = "0123456789"
-        star = Literal('*')
-        number = Word(digits) | Word(alphas)
-        steps = number
-        range_ = number + Optional(Literal('-') + number)
-        numspec = star | range_
-        expr = Group(numspec) + Optional(Literal('/') + steps)
-        extra_groups = ZeroOrMore(Literal(',') + expr)
-        groups = expr + extra_groups + StringEnd()
-
-        # define parse actions
-        star.setParseAction(self._expand_star)
-        number.setParseAction(self._expand_number)
-        range_.setParseAction(self._expand_range)
-        expr.setParseAction(self._filter_steps)
-        extra_groups.setParseAction(self._ignore_comma)
-        groups.setParseAction(self._join_to_set)
-
         self.max_ = max_
-        self.parser = groups
+        self.pats = (
+                (re.compile(self._range + self._steps), self._range_steps),
+                (re.compile(self._range), self._expand_range),
+                (re.compile(self._star + self._steps), self._star_steps),
+                (re.compile('^' + self._star + '$'), self._expand_star))
 
-    @staticmethod
-    def _expand_number(toks):
-        try:
-            i = int(toks[0])
-        except ValueError:
-            try:
-                i = weekday(toks[0])
-            except KeyError:
-                raise ValueError("Invalid weekday literal '%s'." % toks[0])
-        return [i]
+    def parse(self, spec):
+        acc = set()
+        for part in spec.split(','):
+            if not part:
+                raise self.ParseException("empty part")
+            acc |= set(self._parse_part(part))
+        return acc
 
-    @staticmethod
-    def _expand_range(toks):
+    def _parse_part(self, part):
+        for regex, handler in self.pats:
+            m = regex.match(part)
+            if m:
+                return handler(m.groups())
+        return self._expand_range((part, ))
+
+    def _expand_range(self, toks):
+        fr = self._expand_number(toks[0])
         if len(toks) > 1:
-            return range(toks[0], int(toks[2]) + 1)
-        else:
-            return toks[0]
+            to = self._expand_number(toks[1])
+            return range(fr, min(to + 1, self.max_ + 1))
+        return [fr]
 
-    def _expand_star(self, toks):
+    def _range_steps(self, toks):
+        if len(toks) != 3 or not toks[2]:
+            raise self.ParseException("empty filter")
+        return self._expand_range(toks[:2])[::int(toks[2])]
+
+    def _star_steps(self, toks):
+        if not toks or not toks[0]:
+            raise self.ParseException("empty filter")
+        return self._expand_star()[::int(toks[0])]
+
+    def _expand_star(self, *args):
         return range(self.max_)
 
-    @staticmethod
-    def _filter_steps(toks):
-        numbers = toks[0]
-        if len(toks) > 1:
-            steps = toks[2]
-            return [n for n in numbers if n % steps == 0]
-        else:
-            return numbers
-
-    @staticmethod
-    def _ignore_comma(toks):
-        return filter(lambda x: x != ',', toks)
-
-    @staticmethod
-    def _join_to_set(toks):
-        return set(toks.asList())
-
-    def parse(self, cronspec):
-        return self.parser.parseString(cronspec).pop()
+    def _expand_number(self, s):
+        if isinstance(s, basestring) and s[0] == '-':
+            raise self.ParseException("negative numbers not supported")
+        try:
+            i = int(s)
+        except ValueError:
+            try:
+                i = weekday(s)
+            except KeyError:
+                raise ValueError("Invalid weekday literal '%s'." % s)
+        return i
 
 
 class crontab(schedule):
-    """A crontab can be used as the ``run_every`` value of a
+    """A crontab can be used as the `run_every` value of a
     :class:`PeriodicTask` to add cron-like scheduling.
 
     Like a :manpage:`cron` job, you can specify units of time of when
@@ -228,15 +260,14 @@ class crontab(schedule):
 
         return result
 
-    def __init__(self, minute='*', hour='*', day_of_week='*',
-            nowfun=datetime.now):
+    def __init__(self, minute='*', hour='*', day_of_week='*', nowfun=None):
         self._orig_minute = minute
         self._orig_hour = hour
         self._orig_day_of_week = day_of_week
         self.hour = self._expand_cronspec(hour, 24)
         self.minute = self._expand_cronspec(minute, 60)
         self.day_of_week = self._expand_cronspec(day_of_week, 7)
-        self.nowfun = nowfun
+        self.nowfun = nowfun or current_app.now
 
     def __repr__(self):
         return "<crontab: %s %s %s (m/h/d)>" % (self._orig_minute or "*",
@@ -251,12 +282,11 @@ class crontab(schedule):
     def remaining_estimate(self, last_run_at):
         """Returns when the periodic task should run next as a timedelta."""
         weekday = last_run_at.isoweekday()
-        if weekday == 7:    # sunday is day 0, not day 7.
-            weekday = 0
+        weekday = 0 if weekday == 7 else weekday  # Sunday is day 0, not day 7.
 
         execute_this_hour = (weekday in self.day_of_week and
                                 last_run_at.hour in self.hour and
-                                last_run_at.minute < max(self.minute))
+                                    last_run_at.minute < max(self.minute))
 
         if execute_this_hour:
             next_minute = min(minute for minute in self.minute
@@ -266,7 +296,6 @@ class crontab(schedule):
                                   microsecond=0)
         else:
             next_minute = min(self.minute)
-
             execute_today = (weekday in self.day_of_week and
                                  last_run_at.hour < max(self.hour))
 
@@ -294,7 +323,7 @@ class crontab(schedule):
         return remaining(last_run_at, delta, now=self.nowfun())
 
     def is_due(self, last_run_at):
-        """Returns tuple of two items ``(is_due, next_time_to_run)``,
+        """Returns tuple of two items `(is_due, next_time_to_run)`,
         where next time to run is in seconds.
 
         See :meth:`celery.schedules.schedule.is_due` for more information.

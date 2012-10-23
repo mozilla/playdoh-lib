@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """celeryd
 
 .. program:: celeryd
@@ -10,12 +10,12 @@
 
 .. cmdoption:: -f, --logfile
 
-    Path to log file. If no logfile is specified, ``stderr`` is used.
+    Path to log file. If no logfile is specified, `stderr` is used.
 
 .. cmdoption:: -l, --loglevel
 
-    Logging level, choose between ``DEBUG``, ``INFO``, ``WARNING``,
-    ``ERROR``, ``CRITICAL``, or ``FATAL``.
+    Logging level, choose between `DEBUG`, `INFO`, `WARNING`,
+    `ERROR`, `CRITICAL`, or `FATAL`.
 
 .. cmdoption:: -n, --hostname
 
@@ -23,14 +23,14 @@
 
 .. cmdoption:: -B, --beat
 
-    Also run the ``celerybeat`` periodic task scheduler. Please note that
+    Also run the `celerybeat` periodic task scheduler. Please note that
     there must only be one instance of this service.
 
 .. cmdoption:: -Q, --queues
 
     List of queues to enable for this worker, separated by comma.
     By default all configured queues are enabled.
-    Example: ``-Q video,image``
+    Example: `-Q video,image`
 
 .. cmdoption:: -I, --include
 
@@ -39,8 +39,8 @@
 
 .. cmdoption:: -s, --schedule
 
-    Path to the schedule database if running with the ``-B`` option.
-    Defaults to ``celerybeat-schedule``. The extension ".db" will be
+    Path to the schedule database if running with the `-B` option.
+    Defaults to `celerybeat-schedule`. The extension ".db" will be
     appended to the filename.
 
 .. cmdoption:: --scheduler
@@ -49,7 +49,7 @@
 
 .. cmdoption:: -E, --events
 
-    Send events that can be captured by monitors like ``celerymon``.
+    Send events that can be captured by monitors like `celerymon`.
 
 .. cmdoption:: --purge, --discard
 
@@ -71,26 +71,48 @@
     terminated and replaced by a new worker.
 
 """
+from __future__ import absolute_import
+
+if __name__ == "__main__" and globals().get("__package__") is None:
+    __package__ = "celery.bin.celeryd"
+
 import sys
-import multiprocessing
+
+try:
+    from celery.concurrency.processes.forking import freeze_support
+except ImportError:  # pragma: no cover
+    freeze_support = lambda: True  # noqa
 
 from celery.bin.base import Command, Option
 
 
 class WorkerCommand(Command):
+    namespace = "celeryd"
+    enable_config_from_cmdline = True
+    supports_args = False
 
     def run(self, *args, **kwargs):
-        from celery.apps.worker import Worker
-        kwargs["defaults"] = self.defaults
-        return Worker(**kwargs).run()
+        kwargs.pop("app", None)
+        # Pools like eventlet/gevent needs to patch libs as early
+        # as possible.
+        from celery import concurrency
+        kwargs["pool_cls"] = concurrency.get_implementation(
+                    kwargs.get("pool_cls") or self.app.conf.CELERYD_POOL)
+        return self.app.Worker(**kwargs).run()
 
     def get_options(self):
-        conf = self.defaults
+        conf = self.app.conf
         return (
             Option('-c', '--concurrency',
                 default=conf.CELERYD_CONCURRENCY,
                 action="store", dest="concurrency", type="int",
-                help="Number of child processes processing the queue."),
+                help="Number of worker threads/processes"),
+            Option('-P', '--pool',
+                default=conf.CELERYD_POOL,
+                action="store", dest="pool_cls", type="str",
+                help="Pool implementation: "
+                     "processes (default), eventlet, gevent, "
+                     "solo or threads."),
             Option('--purge', '--discard', default=False,
                 action="store_true", dest="discard",
                 help="Discard all waiting tasks before the server is"
@@ -106,13 +128,13 @@ class WorkerCommand(Command):
                 action="store", dest="hostname",
                 help="Set custom host name. E.g. 'foo.example.com'."),
             Option('-B', '--beat', default=False,
-                action="store_true", dest="run_clockservice",
+                action="store_true", dest="embed_clockservice",
                 help="Also run the celerybeat periodic task scheduler. "
                      "NOTE: Only one instance of celerybeat must be"
                      "running at any one time."),
             Option('-s', '--schedule',
                 default=conf.CELERYBEAT_SCHEDULE_FILENAME,
-                action="store", dest="schedule",
+                action="store", dest="schedule_filename",
                 help="Path to the schedule database if running with the -B "
                      "option. The extension '.db' will be appended to the "
                     "filename. Default: %s" % (
@@ -121,14 +143,14 @@ class WorkerCommand(Command):
                 default=None,
                 action="store", dest="scheduler_cls",
                 help="Scheduler class. Default is "
-                     "celery.beat.PersistentScheduler"),
+                     "celery.beat:PersistentScheduler"),
             Option('-S', '--statedb', default=conf.CELERYD_STATE_DB,
-                action="store", dest="db",
+                action="store", dest="state_db",
                 help="Path to the state database. The extension '.db' will "
                      "be appended to the filename. Default: %s" % (
                         conf.CELERYD_STATE_DB, )),
-            Option('-E', '--events', default=conf.SEND_EVENTS,
-                action="store_true", dest="events",
+            Option('-E', '--events', default=conf.CELERY_SEND_EVENTS,
+                action="store_true", dest="send_events",
                 help="Send events so the worker can be monitored by "
                      "celeryev, celerymon and other monitors.."),
             Option('--time-limit',
@@ -153,34 +175,30 @@ class WorkerCommand(Command):
                 action="store", dest="include",
                 help="Comma separated list of additional modules to import. "
                  "Example: -I foo.tasks,bar.tasks"),
-            Option('--pidfile', default=None,
+            Option('--pidfile', dest="pidfile", default=None,
                 help="Optional file used to store the workers pid. "
                      "The worker will not start if this file already exists "
                      "and the pid is still alive."),
+            Option('--autoscale', dest="autoscale", default=None,
+                help="Enable autoscaling by providing "
+                     "max_concurrency,min_concurrency. Example: "
+                     "--autoscale=10,3 (always keep 3 processes, "
+                     "but grow to 10 if necessary)."),
+            Option('--autoreload', dest="autoreload",
+                    action="store_true", default=False,
+                help="Enable autoreloading."),
         )
 
 
 def main():
-    multiprocessing.freeze_support()
+    # Fix for setuptools generated scripts, so that it will
+    # work with multiprocessing fork emulation.
+    # (see multiprocessing.forking.get_preparation_data())
+    if __name__ != "__main__":
+        sys.modules["__main__"] = sys.modules[__name__]
+    freeze_support()
     worker = WorkerCommand()
     worker.execute_from_commandline()
-
-
-def windows_main():
-    sys.stderr.write("""
-
-The celeryd command does not work on Windows.
-
-Instead, please use:
-
-    ..> python -m celery.bin.celeryd
-
-You can also supply arguments:
-
-    ..> python -m celery.bin.celeryd --concurrency=10 --loglevel=DEBUG
-
-
-    """.strip())
 
 
 if __name__ == "__main__":          # pragma: no cover

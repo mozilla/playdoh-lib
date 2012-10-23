@@ -1,17 +1,23 @@
-"""celery.registry"""
+# -*- coding: utf-8 -*-
+"""
+    celery.registry
+    ~~~~~~~~~~~~~~~
+
+    Registry of available tasks.
+
+    :copyright: (c) 2009 - 2012 by Ask Solem.
+    :license: BSD, see LICENSE for more details.
+
+"""
+from __future__ import absolute_import
+
 import inspect
-from UserDict import UserDict
 
-from celery.exceptions import NotRegistered
+from .exceptions import NotRegistered
 
 
-class TaskRegistry(UserDict):
-    """Site registry for tasks."""
-
+class TaskRegistry(dict):
     NotRegistered = NotRegistered
-
-    def __init__(self):
-        self.data = {}
 
     def regular(self):
         """Get all regular task types."""
@@ -28,15 +34,13 @@ class TaskRegistry(UserDict):
         instance.
 
         """
-        task = inspect.isclass(task) and task() or task
-        name = task.name
-        self.data[name] = task
+        self[task.name] = inspect.isclass(task) and task() or task
 
     def unregister(self, name):
         """Unregister task by name.
 
         :param name: name of the task to unregister, or a
-            :class:`celery.task.base.Task` with a valid ``name`` attribute.
+            :class:`celery.task.base.Task` with a valid `name` attribute.
 
         :raises celery.exceptions.NotRegistered: if the task has not
             been registered.
@@ -47,34 +51,21 @@ class TaskRegistry(UserDict):
             name = name.name
         except AttributeError:
             pass
-
         self.pop(name)
 
     def filter_types(self, type):
         """Return all tasks of a specific type."""
-        return dict((task_name, task)
-                        for task_name, task in self.data.items()
-                            if task.type == type)
-
-    def __getitem__(self, key):
-        try:
-            return UserDict.__getitem__(self, key)
-        except KeyError, exc:
-            raise self.NotRegistered(str(exc))
+        return dict((name, task) for name, task in self.iteritems()
+                                    if task.type == type)
 
     def pop(self, key, *args):
         try:
-            return UserDict.pop(self, key, *args)
-        except KeyError, exc:
-            raise self.NotRegistered(str(exc))
+            return dict.pop(self, key, *args)
+        except KeyError:
+            raise self.NotRegistered(key)
 
 
-"""
-.. data:: tasks
-
-    The global task registry.
-
-"""
+#: Global task registry.
 tasks = TaskRegistry()
 
 

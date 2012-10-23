@@ -1,13 +1,26 @@
+# -*- coding: utf-8 -*-
+"""
+    celery.events.dumper
+    ~~~~~~~~~~~~~~~~~~~~
+
+    THis is a simple program that dumps events to the console
+    as they happen.  Think of it like a `tcpdump` for Celery events.
+
+    :copyright: (c) 2009 - 2012 by Ask Solem.
+    :license: BSD, see LICENSE for more details.
+
+"""
+from __future__ import absolute_import
+
 import sys
 
 from datetime import datetime
 
-from celery.datastructures import LocalCache
-from celery.events import EventReceiver
-from celery.messaging import establish_connection
+from ..app import app_or_default
+from ..datastructures import LRUCache
 
 
-TASK_NAMES = LocalCache(0xFFF)
+TASK_NAMES = LRUCache(limit=0xFFF)
 
 HUMAN_TYPES = {"worker-offline": "shutdown",
                "worker-online": "started",
@@ -24,12 +37,12 @@ def humanize_type(type):
 class Dumper(object):
 
     def on_event(self, event):
-        timestamp = datetime.fromtimestamp(event.pop("timestamp"))
+        timestamp = datetime.utcfromtimestamp(event.pop("timestamp"))
         type = event.pop("type").lower()
         hostname = event.pop("hostname")
         if type.startswith("task-"):
             uuid = event.pop("uuid")
-            if type.startswith("task-received"):
+            if type in ("task-received", "task-sent"):
                 task = TASK_NAMES[uuid] = "%s(%s) args=%s kwargs=%s" % (
                         event.pop("name"), uuid,
                         event.pop("args"),
@@ -52,11 +65,12 @@ class Dumper(object):
                                     humanize_type(type), sep, task, fields))
 
 
-def evdump():
+def evdump(app=None):
     sys.stderr.write("-> evdump: starting capture...\n")
+    app = app_or_default(app)
     dumper = Dumper()
-    conn = establish_connection()
-    recv = EventReceiver(conn, handlers={"*": dumper.on_event})
+    conn = app.broker_connection()
+    recv = app.events.Receiver(conn, handlers={"*": dumper.on_event})
     try:
         recv.capture()
     except (KeyboardInterrupt, SystemExit):

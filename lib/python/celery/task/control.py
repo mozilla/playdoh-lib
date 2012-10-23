@@ -1,91 +1,21 @@
-from celery import conf
-from celery.utils import gen_unique_id
-from celery.messaging import BroadcastPublisher, ControlReplyConsumer
-from celery.messaging import with_connection, get_consumer_set
+# -*- coding: utf-8 -*-
+"""
+    celery.task.control
+    ~~~~~~~~~~~~~~~~~~~
 
+    Client for worker remote control commands.
+    Server implementation is in :mod:`celery.worker.control`.
 
-@with_connection
-def discard_all(connection=None,
-        connect_timeout=conf.BROKER_CONNECTION_TIMEOUT):
-    """Discard all waiting tasks.
+    :copyright: (c) 2009 - 2012 by Ask Solem.
+    :license: BSD, see LICENSE for more details.
 
-    This will ignore all tasks waiting for execution, and they will
-    be deleted from the messaging server.
+"""
+from __future__ import absolute_import
+from __future__ import with_statement
 
-    :returns: the number of tasks discarded.
+from kombu.pidbox import Mailbox
 
-    """
-    consumers = get_consumer_set(connection=connection)
-    try:
-        return consumers.discard_all()
-    finally:
-        consumers.close()
-
-
-def revoke(task_id, destination=None, **kwargs):
-    """Revoke a task by id.
-
-    If a task is revoked, the workers will ignore the task and not execute
-    it after all.
-
-    :param task_id: Id of the task to revoke.
-    :keyword destination: If set, a list of the hosts to send the command to,
-        when empty broadcast to all workers.
-    :keyword connection: Custom broker connection to use, if not set,
-        a connection will be established automatically.
-    :keyword connect_timeout: Timeout for new connection if a custom
-        connection is not provided.
-    :keyword reply: Wait for and return the reply.
-    :keyword timeout: Timeout in seconds to wait for the reply.
-    :keyword limit: Limit number of replies.
-
-    """
-    return broadcast("revoke", destination=destination,
-                               arguments={"task_id": task_id}, **kwargs)
-
-
-def ping(destination=None, timeout=1, **kwargs):
-    """Ping workers.
-
-    Returns answer from alive workers.
-
-    :keyword destination: If set, a list of the hosts to send the command to,
-        when empty broadcast to all workers.
-    :keyword connection: Custom broker connection to use, if not set,
-        a connection will be established automatically.
-    :keyword connect_timeout: Timeout for new connection if a custom
-        connection is not provided.
-    :keyword reply: Wait for and return the reply.
-    :keyword timeout: Timeout in seconds to wait for the reply.
-    :keyword limit: Limit number of replies.
-
-    """
-    return broadcast("ping", reply=True, destination=destination,
-                     timeout=timeout, **kwargs)
-
-
-def rate_limit(task_name, rate_limit, destination=None, **kwargs):
-    """Set rate limit for task by type.
-
-    :param task_name: Type of task to change rate limit for.
-    :param rate_limit: The rate limit as tasks per second, or a rate limit
-      string (``"100/m"``, etc. see :attr:`celery.task.base.Task.rate_limit`
-      for more information).
-    :keyword destination: If set, a list of the hosts to send the command to,
-        when empty broadcast to all workers.
-    :keyword connection: Custom broker connection to use, if not set,
-        a connection will be established automatically.
-    :keyword connect_timeout: Timeout for new connection if a custom
-        connection is not provided.
-    :keyword reply: Wait for and return the reply.
-    :keyword timeout: Timeout in seconds to wait for the reply.
-    :keyword limit: Limit number of replies.
-
-    """
-    return broadcast("rate_limit", destination=destination,
-                                   arguments={"task_name": task_name,
-                                              "rate_limit": rate_limit},
-                                   **kwargs)
+from ..app import app_or_default
 
 
 def flatten_reply(reply):
@@ -95,12 +25,13 @@ def flatten_reply(reply):
     return nodes
 
 
-class inspect(object):
+class Inspect(object):
 
-    def __init__(self, destination=None, timeout=1, callback=None):
+    def __init__(self, control, destination=None, timeout=1, callback=None,):
         self.destination = destination
         self.timeout = timeout
         self.callback = callback
+        self.control = control
 
     def _prepare(self, reply):
         if not reply:
@@ -112,7 +43,8 @@ class inspect(object):
         return by_node
 
     def _request(self, command, **kwargs):
-        return self._prepare(broadcast(command, arguments=kwargs,
+        return self._prepare(self.control.broadcast(command,
+                                      arguments=kwargs,
                                       destination=self.destination,
                                       callback=self.callback,
                                       timeout=self.timeout, reply=True))
@@ -132,7 +64,7 @@ class inspect(object):
     def revoked(self):
         return self._request("dump_revoked")
 
-    def registered_tasks(self):
+    def registered(self):
         return self._request("dump_tasks")
 
     def enable_events(self):
@@ -153,53 +85,156 @@ class inspect(object):
     def cancel_consumer(self, queue, **kwargs):
         return self._request("cancel_consumer", queue=queue, **kwargs)
 
+    def active_queues(self):
+        return self._request("active_queues")
 
-@with_connection
-def broadcast(command, arguments=None, destination=None, connection=None,
-        connect_timeout=conf.BROKER_CONNECTION_TIMEOUT, reply=False,
-        timeout=1, limit=None, callback=None):
-    """Broadcast a control command to the celery workers.
+    registered_tasks = registered
 
-    :param command: Name of command to send.
-    :param arguments: Keyword arguments for the command.
-    :keyword destination: If set, a list of the hosts to send the command to,
-        when empty broadcast to all workers.
-    :keyword connection: Custom broker connection to use, if not set,
-        a connection will be established automatically.
-    :keyword connect_timeout: Timeout for new connection if a custom
-        connection is not provided.
-    :keyword reply: Wait for and return the reply.
-    :keyword timeout: Timeout in seconds to wait for the reply.
-    :keyword limit: Limit number of replies.
-    :keyword callback: Callback called immediately for each reply
-        received.
 
-    """
-    arguments = arguments or {}
-    reply_ticket = reply and gen_unique_id() or None
+class Control(object):
+    Mailbox = Mailbox
 
-    if destination is not None and not isinstance(destination, (list, tuple)):
-        raise ValueError("destination must be a list/tuple not %s" % (
-                type(destination)))
+    def __init__(self, app):
+        self.app = app
+        self.mailbox = self.Mailbox("celeryd", type="fanout")
 
-    # Set reply limit to number of destinations (if specificed)
-    if limit is None and destination:
-        limit = destination and len(destination) or None
+    def inspect(self, destination=None, timeout=1, callback=None):
+        return Inspect(self, destination=destination, timeout=timeout,
+                             callback=callback)
 
-    crq = None
-    if reply_ticket:
-        crq = ControlReplyConsumer(connection, reply_ticket)
+    def discard_all(self, connection=None, connect_timeout=None):
+        """Discard all waiting tasks.
 
-    broadcast = BroadcastPublisher(connection)
-    try:
-        broadcast.send(command, arguments, destination=destination,
-                       reply_ticket=reply_ticket)
-    finally:
-        broadcast.close()
+        This will ignore all tasks waiting for execution, and they will
+        be deleted from the messaging server.
 
-    if crq:
-        try:
-            return crq.collect(limit=limit, timeout=timeout,
-                               callback=callback)
-        finally:
-            crq.close()
+        :returns: the number of tasks discarded.
+
+        """
+        with self.app.default_connection(connection, connect_timeout) as conn:
+            return self.app.amqp.get_task_consumer(connection=conn)\
+                                .discard_all()
+
+    def revoke(self, task_id, destination=None, terminate=False,
+            signal="SIGTERM", **kwargs):
+        """Revoke a task by id.
+
+        If a task is revoked, the workers will ignore the task and
+        not execute it after all.
+
+        :param task_id: Id of the task to revoke.
+        :keyword terminate: Also terminate the process currently working
+            on the task (if any).
+        :keyword signal: Name of signal to send to process if terminate.
+            Default is TERM.
+        :keyword destination: If set, a list of the hosts to send the
+            command to, when empty broadcast to all workers.
+        :keyword connection: Custom broker connection to use, if not set,
+            a connection will be established automatically.
+        :keyword connect_timeout: Timeout for new connection if a custom
+            connection is not provided.
+        :keyword reply: Wait for and return the reply.
+        :keyword timeout: Timeout in seconds to wait for the reply.
+        :keyword limit: Limit number of replies.
+
+        """
+        return self.broadcast("revoke", destination=destination,
+                              arguments={"task_id": task_id,
+                                         "terminate": terminate,
+                                         "signal": signal}, **kwargs)
+
+    def ping(self, destination=None, timeout=1, **kwargs):
+        """Ping workers.
+
+        Returns answer from alive workers.
+
+        :keyword destination: If set, a list of the hosts to send the
+            command to, when empty broadcast to all workers.
+        :keyword connection: Custom broker connection to use, if not set,
+            a connection will be established automatically.
+        :keyword connect_timeout: Timeout for new connection if a custom
+            connection is not provided.
+        :keyword reply: Wait for and return the reply.
+        :keyword timeout: Timeout in seconds to wait for the reply.
+        :keyword limit: Limit number of replies.
+
+        """
+        return self.broadcast("ping", reply=True, destination=destination,
+                              timeout=timeout, **kwargs)
+
+    def rate_limit(self, task_name, rate_limit, destination=None, **kwargs):
+        """Set rate limit for task by type.
+
+        :param task_name: Name of task to change rate limit for.
+        :param rate_limit: The rate limit as tasks per second, or a rate limit
+            string (`"100/m"`, etc.
+            see :attr:`celery.task.base.Task.rate_limit` for
+            more information).
+        :keyword destination: If set, a list of the hosts to send the
+            command to, when empty broadcast to all workers.
+        :keyword connection: Custom broker connection to use, if not set,
+            a connection will be established automatically.
+        :keyword connect_timeout: Timeout for new connection if a custom
+            connection is not provided.
+        :keyword reply: Wait for and return the reply.
+        :keyword timeout: Timeout in seconds to wait for the reply.
+        :keyword limit: Limit number of replies.
+
+        """
+        return self.broadcast("rate_limit", destination=destination,
+                              arguments={"task_name": task_name,
+                                         "rate_limit": rate_limit},
+                              **kwargs)
+
+    def time_limit(self, task_name, soft=None, hard=None, **kwargs):
+        """Set time limits for task by type.
+
+        :param task_name: Name of task to change time limits for.
+        :keyword soft: New soft time limit (in seconds).
+        :keyword hard: New hard time limit (in seconds).
+
+        Any additional keyword arguments are passed on to :meth:`broadcast`.
+
+        """
+        return self.broadcast("time_limit",
+                              arguments={"task_name": task_name,
+                                         "hard": hard, "soft": soft},
+                              **kwargs)
+
+    def broadcast(self, command, arguments=None, destination=None,
+            connection=None, connect_timeout=None, reply=False, timeout=1,
+            limit=None, callback=None, channel=None):
+        """Broadcast a control command to the celery workers.
+
+        :param command: Name of command to send.
+        :param arguments: Keyword arguments for the command.
+        :keyword destination: If set, a list of the hosts to send the
+            command to, when empty broadcast to all workers.
+        :keyword connection: Custom broker connection to use, if not set,
+            a connection will be established automatically.
+        :keyword connect_timeout: Timeout for new connection if a custom
+            connection is not provided.
+        :keyword reply: Wait for and return the reply.
+        :keyword timeout: Timeout in seconds to wait for the reply.
+        :keyword limit: Limit number of replies.
+        :keyword callback: Callback called immediately for each reply
+            received.
+
+        """
+        with self.app.default_connection(connection, connect_timeout) as conn:
+            if channel is None:
+                channel = conn.default_channel
+            return self.mailbox(conn)._broadcast(command, arguments,
+                                                 destination, reply, timeout,
+                                                 limit, callback,
+                                                 channel=channel)
+
+
+_default_control = Control(app_or_default())
+broadcast = _default_control.broadcast
+rate_limit = _default_control.rate_limit
+time_limit = _default_control.time_limit
+ping = _default_control.ping
+revoke = _default_control.revoke
+discard_all = _default_control.discard_all
+inspect = _default_control.inspect

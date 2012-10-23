@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 import sys
 
 
@@ -75,8 +77,6 @@ class catch_warnings(object):
 
             self._module.showwarning = showwarning
             return log
-        else:
-            return None
 
     def __exit__(self, *exc_info):
         if not self._entered:

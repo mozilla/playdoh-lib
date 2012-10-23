@@ -1,59 +1,37 @@
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+from __future__ import with_statement
+
+if __name__ == "__main__" and globals().get("__package__") is None:
+    __package__ = "celery.bin.celeryd_detach"
+
 import os
 import sys
 
-from optparse import OptionParser, BadOptionError, make_option as Option
+from optparse import OptionParser, BadOptionError
 
-from celery import __version__
-from celery.platforms import create_daemon_context
+from .. import __version__
+from ..platforms import detached
 
-OPTION_LIST = (
-        Option('-f', '--logfile', default=None,
-               action="store", dest="logfile",
-               help="Path to the logfile"),
-        Option('--pidfile', default="celeryd.pid",
-               action="store", dest="pidfile",
-               help="Path to the pidfile."),
-        Option('--uid', default=None,
-               action="store", dest="uid",
-               help="Effective user id to run as when detached."),
-        Option('--gid', default=None,
-               action="store", dest="gid",
-               help="Effective group id to run as when detached."),
-        Option('--umask', default=0,
-               action="store", type="int", dest="umask",
-               help="Umask of the process when detached."),
-        Option('--workdir', default=None,
-               action="store", dest="working_directory",
-               help="Directory to change to when detached."),
-)
+from .base import daemon_options, Option
+
+OPTION_LIST = daemon_options(default_pidfile="celeryd.pid") + (
+                Option("--fake",
+                       default=False, action="store_true", dest="fake",
+                       help="Don't fork (for debugging purposes)"), )
 
 
-class detached(object):
-
-    def __init__(self, path, argv, logfile=None, pidfile=None, uid=None,
-            gid=None, umask=0, working_directory=None):
-        self.path = path
-        self.argv = argv
-        self.logfile = logfile
-        self.pidfile = pidfile
-        self.uid = uid
-        self.gid = gid
-        self.umask = umask
-        self.working_directory = working_directory
-
-    def start(self):
-        context, on_stop = create_daemon_context(
-                                logfile=self.logfile,
-                                pidfile=self.pidfile,
-                                uid=self.uid,
-                                gid=self.gid,
-                                umask=self.umask,
-                                working_directory=self.working_directory)
-        context.open()
+def detach(path, argv, logfile=None, pidfile=None, uid=None,
+           gid=None, umask=0, working_directory=None, fake=False, ):
+    with detached(logfile, pidfile, uid, gid, umask, working_directory, fake):
         try:
-            os.execv(self.path, [self.path] + self.argv)
-        finally:
-            on_stop()
+            os.execv(path, [path] + argv)
+        except Exception:
+            import logging
+            from ..log import setup_logger
+            logger = setup_logger(logfile=logfile, loglevel=logging.ERROR)
+            logger.critical("Can't exec %r", " ".join([path] + argv),
+                            exc_info=True)
 
 
 class PartialOptionParser(OptionParser):
@@ -141,11 +119,20 @@ class detached_celeryd(object):
     def execute_from_commandline(self, argv=None):
         if argv is None:
             argv = sys.argv
+        config = []
+        seen_cargs = 0
+        for arg in argv:
+            if seen_cargs:
+                config.append(arg)
+            else:
+                if arg == "--":
+                    seen_cargs = 1
+                    config.append(arg)
         prog_name = os.path.basename(argv[0])
         options, values, leftovers = self.parse_options(prog_name, argv[1:])
-        detached(path=self.execv_path,
-                 argv=self.execv_argv + leftovers,
-                 **vars(options)).start()
+        detach(path=self.execv_path,
+               argv=self.execv_argv + leftovers + config,
+               **vars(options))
 
 
 def main():

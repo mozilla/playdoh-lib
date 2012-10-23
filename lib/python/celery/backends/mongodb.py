@@ -1,17 +1,19 @@
+# -*- coding: utf-8 -*-
 """MongoDB backend for celery."""
+from __future__ import absolute_import
+
 from datetime import datetime
 
 try:
     import pymongo
 except ImportError:
-    pymongo = None
+    pymongo = None  # noqa
 
-from celery import conf
-from celery import states
-from celery.loaders import load_settings
-from celery.backends.base import BaseDictBackend
-from celery.exceptions import ImproperlyConfigured
-from celery.serialization import pickle
+from .. import states
+from ..exceptions import ImproperlyConfigured
+from ..utils.timeutils import maybe_timedelta
+
+from .base import BaseDictBackend
 
 
 class Bunch:
@@ -35,17 +37,16 @@ class MongoBackend(BaseDictBackend):
             module :mod:`pymongo` is not available.
 
         """
-        self.result_expires = kwargs.get("result_expires") or \
-                                conf.TASK_RESULT_EXPIRES
+        super(MongoBackend, self).__init__(*args, **kwargs)
+        self.expires = kwargs.get("expires") or maybe_timedelta(
+                                    self.app.conf.CELERY_TASK_RESULT_EXPIRES)
 
         if not pymongo:
             raise ImproperlyConfigured(
                 "You need to install the pymongo library to use the "
                 "MongoDB backend.")
 
-        settings = load_settings()
-
-        config = getattr(settings, "CELERY_MONGODB_BACKEND_SETTINGS", None)
+        config = self.app.conf.get("CELERY_MONGODB_BACKEND_SETTINGS", None)
         if config is not None:
             if not isinstance(config, dict):
                 raise ImproperlyConfigured(
@@ -61,7 +62,6 @@ class MongoBackend(BaseDictBackend):
             self.mongodb_taskmeta_collection = config.get(
                 "taskmeta_collection", self.mongodb_taskmeta_collection)
 
-        super(MongoBackend, self).__init__(*args, **kwargs)
         self._connection = None
         self._database = None
 
@@ -69,8 +69,20 @@ class MongoBackend(BaseDictBackend):
         """Connect to the MongoDB server."""
         if self._connection is None:
             from pymongo.connection import Connection
-            self._connection = Connection(self.mongodb_host,
-                                          self.mongodb_port)
+
+            # The first pymongo.Connection() argument (host) can be
+            # a list of ['host:port'] elements or a mongodb connection
+            # URI. If this is the case, don't use self.mongodb_port
+            # but let pymongo get the port(s) from the URI instead.
+            # This enables the use of replica sets and sharding.
+            # See pymongo.Connection() for more info.
+            args = [self.mongodb_host]
+            if isinstance(self.mongodb_host, basestring) \
+                    and not self.mongodb_host.startswith("mongodb://"):
+                args.append(self.mongodb_port)
+
+            self._connection = Connection(*args)
+
         return self._connection
 
     def _get_database(self):
@@ -101,9 +113,9 @@ class MongoBackend(BaseDictBackend):
 
         meta = {"_id": task_id,
                 "status": status,
-                "result": Binary(pickle.dumps(result)),
-                "date_done": datetime.now(),
-                "traceback": Binary(pickle.dumps(traceback))}
+                "result": Binary(self.encode(result)),
+                "date_done": datetime.utcnow(),
+                "traceback": Binary(self.encode(traceback))}
 
         db = self._get_database()
         taskmeta_collection = db[self.mongodb_taskmeta_collection]
@@ -123,12 +135,64 @@ class MongoBackend(BaseDictBackend):
         meta = {
             "task_id": obj["_id"],
             "status": obj["status"],
-            "result": pickle.loads(str(obj["result"])),
+            "result": self.decode(obj["result"]),
             "date_done": obj["date_done"],
-            "traceback": pickle.loads(str(obj["traceback"])),
+            "traceback": self.decode(obj["traceback"]),
         }
 
         return meta
+
+    def _save_taskset(self, taskset_id, result):
+        """Save the taskset result."""
+        from pymongo.binary import Binary
+
+        meta = {"_id": taskset_id,
+                "result": Binary(self.encode(result)),
+                "date_done": datetime.utcnow()}
+
+        db = self._get_database()
+        taskmeta_collection = db[self.mongodb_taskmeta_collection]
+        taskmeta_collection.save(meta, safe=True)
+
+        return result
+
+    def _restore_taskset(self, taskset_id):
+        """Get the result for a taskset by id."""
+        db = self._get_database()
+        taskmeta_collection = db[self.mongodb_taskmeta_collection]
+        obj = taskmeta_collection.find_one({"_id": taskset_id})
+        if not obj:
+            return
+
+        meta = {
+            "task_id": obj["_id"],
+            "result": self.decode(obj["result"]),
+            "date_done": obj["date_done"],
+        }
+
+        return meta
+
+    def _delete_taskset(self, taskset_id):
+        """Delete a taskset by id."""
+        db = self._get_database()
+        taskmeta_collection = db[self.mongodb_taskmeta_collection]
+        taskmeta_collection.remove({"_id": taskset_id})
+
+    def _forget(self, task_id):
+        """
+        Remove result from MongoDB.
+
+        :raises celery.exceptions.OperationsError: if the task_id could not be
+                                                   removed.
+        """
+
+        db = self._get_database()
+        taskmeta_collection = db[self.mongodb_taskmeta_collection]
+
+        # By using safe=True, this will wait until it receives a response from
+        # the server.  Likewise, it will raise an OperationsError if the
+        # response was unable to be completed.
+        taskmeta_collection.remove({"_id": task_id}, safe=True)
 
     def cleanup(self):
         """Delete expired metadata."""
@@ -136,6 +200,11 @@ class MongoBackend(BaseDictBackend):
         taskmeta_collection = db[self.mongodb_taskmeta_collection]
         taskmeta_collection.remove({
                 "date_done": {
-                    "$lt": datetime.now() - self.result_expires,
+                    "$lt": self.app.now() - self.expires,
                  }
         })
+
+    def __reduce__(self, args=(), kwargs={}):
+        kwargs.update(
+            dict(expires=self.expires))
+        return super(MongoBackend, self).__reduce__(args, kwargs)

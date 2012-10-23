@@ -1,1 +1,4 @@
-from celery.utils.dispatch.signal import Signal
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+
+from .signal import Signal  # noqa
