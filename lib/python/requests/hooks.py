@@ -25,8 +25,6 @@ Available hooks:
 
 """
 
-import traceback
-
 
 HOOKS = ('args', 'pre_request', 'pre_send', 'post_request', 'response')
 
@@ -43,9 +41,8 @@ def dispatch_hook(key, hooks, hook_data):
             hooks = [hooks]
 
         for hook in hooks:
-            try:
-                hook_data = hook(hook_data) or hook_data
-            except Exception:
-                traceback.print_exc()
+            _hook_data = hook(hook_data)
+            if _hook_data is not None:
+                hook_data = _hook_data
 
     return hook_data

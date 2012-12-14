@@ -6,24 +6,24 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import base64
 import hashlib
 import logging
-from warnings import warn
 
 from django.conf import settings
-from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.importlib import import_module
 
-from django_browserid.base import get_audience as base_get_audience, verify
+from django_browserid.base import verify
 from django_browserid.signals import user_created
+
+try:
+    from django.contrib.auth import get_user_model
+except ImportError:
+    from django.contrib.auth.models import User
+
+    def get_user_model(*args, **kwargs):
+        return User
 
 
 log = logging.getLogger(__name__)
-
-
-def get_audience(*args):
-    warn('Deprecated, please use the standalone function '
-         'django_browserid.get_audience instead.', DeprecationWarning)
-    return base_get_audience(*args)
 
 
 def default_username_algo(email):
@@ -40,14 +40,17 @@ class BrowserIDBackend(object):
     supports_inactive_user = True
     supports_object_permissions = False
 
-    def verify(self, *args):
-        warn('Deprecated, please use the standalone function '
-             'django_browserid.verify instead.', DeprecationWarning)
-        return verify(*args)
+    def __init__(self):
+        """
+        Store the current user model on creation to avoid issues if
+        settings.AUTH_USER_MODEL changes, which usually only happens during
+        tests.
+        """
+        self.User = get_user_model()
 
     def filter_users_by_email(self, email):
         """Return all users matching the specified email."""
-        return User.objects.filter(email=email)
+        return self.User.objects.filter(email=email)
 
     def create_user(self, email):
         """Return object for a newly created user account."""
@@ -57,7 +60,7 @@ class BrowserIDBackend(object):
         else:
             username = default_username_algo(email)
 
-        return User.objects.create_user(username, email)
+        return self.User.objects.create_user(username, email)
 
     def authenticate(self, assertion=None, audience=None):
         """``django.contrib.auth`` compatible authentication method.
@@ -81,7 +84,8 @@ class BrowserIDBackend(object):
         # log and bail. randomly selecting one seems really wrong.
         users = self.filter_users_by_email(email=email)
         if len(users) > 1:
-            log.warn('%d users with email address %s.' % (len(users), email))
+            log.warn('{0} users with email address {1}.'.format(len(users),
+                                                                email))
             return None
         if len(users) == 1:
             return users[0]
@@ -90,7 +94,7 @@ class BrowserIDBackend(object):
         if not create_user:
             return None
         else:
-            if create_user == True:
+            if create_user is True:
                 create_function = self.create_user
             else:
                 # Find the function to call.
@@ -102,8 +106,8 @@ class BrowserIDBackend(object):
 
     def get_user(self, user_id):
         try:
-            return User.objects.get(pk=user_id)
-        except User.DoesNotExist:
+            return self.User.objects.get(pk=user_id)
+        except self.User.DoesNotExist:
             return None
 
     def _load_module(self, path):
@@ -125,6 +129,6 @@ class BrowserIDBackend(object):
         try:
             create_user = getattr(mod, attr)
         except AttributeError:
-            raise ImproperlyConfigured('Module "%s" does not define a "%s" '
-                                       'function.' % (module, attr))
+            raise ImproperlyConfigured('Module {0} does not define a {1} '
+                                       'function.'.format(module, attr))
         return create_user
