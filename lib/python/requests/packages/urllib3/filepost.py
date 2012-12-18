@@ -7,20 +7,17 @@
 import codecs
 import mimetypes
 
-from uuid import uuid4
+try:
+    from mimetools import choose_boundary
+except ImportError:
+    from .packages.mimetools_choose_boundary import choose_boundary
+
 from io import BytesIO
 
 from .packages import six
 from .packages.six import b
 
 writer = codecs.lookup('utf-8')[3]
-
-
-def choose_boundary():
-    """
-    Our embarassingly-simple replacement for mimetools.choose_boundary.
-    """
-    return uuid4().hex
 
 
 def get_content_type(filename):

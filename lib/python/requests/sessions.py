@@ -15,9 +15,8 @@ from .cookies import cookiejar_from_dict, remove_cookie_by_name
 from .defaults import defaults
 from .models import Request
 from .hooks import dispatch_hook
-from .utils import header_expand, from_key_val_list
+from .utils import header_expand
 from .packages.urllib3.poolmanager import PoolManager
-
 
 def merge_kwargs(local_kwarg, default_kwarg):
     """Merges kwarg dictionaries.
@@ -38,15 +37,12 @@ def merge_kwargs(local_kwarg, default_kwarg):
     if not hasattr(default_kwarg, 'items'):
         return local_kwarg
 
-    default_kwarg = from_key_val_list(default_kwarg)
-    local_kwarg = from_key_val_list(local_kwarg)
-
     # Update new values.
     kwargs = default_kwarg.copy()
     kwargs.update(local_kwarg)
 
     # Remove keys that are set to None.
-    for (k, v) in local_kwarg.items():
+    for (k, v) in list(local_kwarg.items()):
         if v is None:
             del kwargs[k]
 
@@ -60,6 +56,7 @@ class Session(object):
         'headers', 'cookies', 'auth', 'timeout', 'proxies', 'hooks',
         'params', 'config', 'verify', 'cert', 'prefetch']
 
+
     def __init__(self,
         headers=None,
         cookies=None,
@@ -69,17 +66,17 @@ class Session(object):
         hooks=None,
         params=None,
         config=None,
-        prefetch=True,
+        prefetch=False,
         verify=True,
         cert=None):
 
-        self.headers = from_key_val_list(headers or [])
+        self.headers = headers or {}
         self.auth = auth
         self.timeout = timeout
-        self.proxies = from_key_val_list(proxies or [])
-        self.hooks = from_key_val_list(hooks or {})
-        self.params = from_key_val_list(params or [])
-        self.config = from_key_val_list(config or {})
+        self.proxies = proxies or {}
+        self.hooks = hooks or {}
+        self.params = params or {}
+        self.config = config or {}
         self.prefetch = prefetch
         self.verify = verify
         self.cert = cert
@@ -108,15 +105,7 @@ class Session(object):
         return self
 
     def __exit__(self, *args):
-        self.close()
-
-    def close(self):
-        """Dispose of any internal state.
-
-        Currently, this just closes the PoolManager, which closes pooled
-        connections.
-        """
-        self.poolmanager.clear()
+        pass
 
     def request(self, method, url,
         params=None,
@@ -131,7 +120,7 @@ class Session(object):
         hooks=None,
         return_response=True,
         config=None,
-        prefetch=None,
+        prefetch=False,
         verify=None,
         cert=None):
 
@@ -151,7 +140,7 @@ class Session(object):
         :param proxies: (optional) Dictionary mapping protocol to the URL of the proxy.
         :param return_response: (optional) If False, an un-sent Request object will returned.
         :param config: (optional) A configuration dictionary. See ``request.defaults`` for allowed keys and their default values.
-        :param prefetch: (optional) whether to immediately download the response content. Defaults to ``True``.
+        :param prefetch: (optional) if ``True``, the response content will be immediately downloaded.
         :param verify: (optional) if ``True``, the SSL cert will be verified. A CA_BUNDLE path can also be provided.
         :param cert: (optional) if String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair.
         """
@@ -159,12 +148,12 @@ class Session(object):
         method = str(method).upper()
 
         # Default empty dicts for dict params.
-        data = [] if data is None else data
-        files = [] if files is None else files
+        data = {} if data is None else data
+        files = {} if files is None else files
         headers = {} if headers is None else headers
         params = {} if params is None else params
         hooks = {} if hooks is None else hooks
-        prefetch = prefetch if prefetch is not None else self.prefetch
+        prefetch = self.prefetch or prefetch
 
         # use session's hooks as defaults
         for key, cb in list(self.hooks.items()):
@@ -172,23 +161,23 @@ class Session(object):
 
         # Expand header values.
         if headers:
-            for k, v in list(headers.items() or {}):
+            for k, v in list(headers.items()) or {}:
                 headers[k] = header_expand(v)
 
         args = dict(
             method=method,
             url=url,
             data=data,
-            params=from_key_val_list(params),
-            headers=from_key_val_list(headers),
+            params=params,
+            headers=headers,
             cookies=cookies,
             files=files,
             auth=auth,
-            hooks=from_key_val_list(hooks),
+            hooks=hooks,
             timeout=timeout,
             allow_redirects=allow_redirects,
-            proxies=from_key_val_list(proxies),
-            config=from_key_val_list(config),
+            proxies=proxies,
+            config=config,
             prefetch=prefetch,
             verify=verify,
             cert=cert,
@@ -243,6 +232,7 @@ class Session(object):
         # Return the response.
         return r.response
 
+
     def get(self, url, **kwargs):
         """Sends a GET request. Returns :class:`Response` object.
 
@@ -252,6 +242,7 @@ class Session(object):
 
         kwargs.setdefault('allow_redirects', True)
         return self.request('get', url, **kwargs)
+
 
     def options(self, url, **kwargs):
         """Sends a OPTIONS request. Returns :class:`Response` object.
@@ -263,6 +254,7 @@ class Session(object):
         kwargs.setdefault('allow_redirects', True)
         return self.request('options', url, **kwargs)
 
+
     def head(self, url, **kwargs):
         """Sends a HEAD request. Returns :class:`Response` object.
 
@@ -272,6 +264,7 @@ class Session(object):
 
         kwargs.setdefault('allow_redirects', False)
         return self.request('head', url, **kwargs)
+
 
     def post(self, url, data=None, **kwargs):
         """Sends a POST request. Returns :class:`Response` object.
@@ -283,6 +276,7 @@ class Session(object):
 
         return self.request('post', url, data=data, **kwargs)
 
+
     def put(self, url, data=None, **kwargs):
         """Sends a PUT request. Returns :class:`Response` object.
 
@@ -293,6 +287,7 @@ class Session(object):
 
         return self.request('put', url, data=data, **kwargs)
 
+
     def patch(self, url, data=None, **kwargs):
         """Sends a PATCH request. Returns :class:`Response` object.
 
@@ -302,6 +297,7 @@ class Session(object):
         """
 
         return self.request('patch', url,  data=data, **kwargs)
+
 
     def delete(self, url, **kwargs):
         """Sends a DELETE request. Returns :class:`Response` object.
