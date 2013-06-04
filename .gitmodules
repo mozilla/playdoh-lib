@@ -37,9 +37,6 @@
 [submodule "src/funfactory"]
 	path = src/funfactory
 	url = git://github.com/mozilla/funfactory.git
-[submodule "src/django-arecibo"]
-	path = src/django-arecibo
-	url = git://github.com/andymckay/django-arecibo.git
 [submodule "src/django-session-csrf"]
 	path = src/django-session-csrf
 	url = git://github.com/mozilla/django-session-csrf.git
