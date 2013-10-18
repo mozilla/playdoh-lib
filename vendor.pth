@@ -1,10 +1,14 @@
+src/bleach
 src/commonware
+src/django-appconf
 src/django-arecibo
+src/django-compressor
 src/django-cronjobs
 src/django-mobility
 src/django-mozilla-product-details
 src/django-multidb-router
 src/django-nose
+src/django-session-csrf
 src/django-sha2
 src/funfactory
 src/jingo
@@ -13,7 +17,3 @@ src/nuggets
 src/schematic
 src/test-utils
 src/tower
-src/bleach
-src/django-session-csrf
-src/django-compressor
-src/django-appconf
