@@ -1,6 +1,9 @@
 
 from xml.dom import minidom, Node, XML_NAMESPACE, XMLNS_NAMESPACE
-import new
+try:
+    from types import ModuleType
+except:
+    from new import module as ModuleType
 import re
 import weakref
 
@@ -15,7 +18,7 @@ def getDomModule(DomImplementation):
     if name in moduleCache:
         return moduleCache[name]
     else:
-        mod = new.module(name)
+        mod = ModuleType(name)
         objs = getDomBuilder(DomImplementation)
         mod.__dict__.update(objs)
         moduleCache[name] = mod    
@@ -23,13 +26,15 @@ def getDomModule(DomImplementation):
 
 def getDomBuilder(DomImplementation):
     Dom = DomImplementation
-    class AttrList:
+    class AttrList(object):
         def __init__(self, element):
             self.element = element
         def __iter__(self):
             return self.element.attributes.items().__iter__()
         def __setitem__(self, name, value):
             self.element.setAttribute(name, value)
+        def __len__(self):
+            return len(self.element.attributes.items())
         def items(self):
             return [(item[0], item[1]) for item in
                      self.element.attributes.items()]
@@ -199,9 +204,9 @@ def getDomBuilder(DomImplementation):
                     name = element.nodeName
                 rv.append("|%s<%s>"%(' '*indent, name))
                 if element.hasAttributes():
-                    i = 0
-                    attr = element.attributes.item(i)
-                    while attr:
+                    attributes = []
+                    for i in range(len(element.attributes)):
+                        attr = element.attributes.item(i)
                         name = attr.nodeName
                         value = attr.value
                         ns = attr.namespaceURI
@@ -209,9 +214,9 @@ def getDomBuilder(DomImplementation):
                             name = "%s %s"%(constants.prefixes[ns], attr.localName)
                         else:
                             name = attr.nodeName
-                        i += 1
-                        attr = element.attributes.item(i)
+                        attributes.append((name, value))
 
+                    for name, value in sorted(attributes):
                         rv.append('|%s%s="%s"' % (' '*(indent+2), name, value))
             indent += 2
             for child in element.childNodes:

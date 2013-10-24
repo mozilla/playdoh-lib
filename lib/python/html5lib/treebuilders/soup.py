@@ -24,7 +24,15 @@ class AttrList(object):
         return self.attrs[name]
     def __contains__(self, name):
         return name in self.attrs.keys()
-
+    def __eq__(self, other):
+        if len(self.keys()) != len(other.keys()):
+            return False
+        for item in self.keys():
+            if item not in other:
+                return False
+            if self[item] != other[item]:
+                return False
+        return True
 
 class Element(_base.Node):
     def __init__(self, element, soup, namespace):
@@ -151,12 +159,12 @@ class TreeBuilder(_base.TreeBuilder):
         systemId = token["systemId"]
 
         if publicId:
-            self.soup.insert(0, Declaration("%s PUBLIC \"%s\" \"%s\""%(name, publicId, systemId or "")))
+            self.soup.insert(0, Declaration("DOCTYPE %s PUBLIC \"%s\" \"%s\""%(name, publicId, systemId or "")))
         elif systemId:
-            self.soup.insert(0, Declaration("%s SYSTEM \"%s\""%
+            self.soup.insert(0, Declaration("DOCTYPE %s SYSTEM \"%s\""%
                                             (name, systemId)))
         else:
-            self.soup.insert(0, Declaration(name))
+            self.soup.insert(0, Declaration("DOCTYPE %s"%name))
     
     def elementClass(self, name, namespace):
         if namespace is not None:
@@ -188,7 +196,7 @@ def testSerializer(element):
     rv = []
     def serializeElement(element, indent=0):
         if isinstance(element, Declaration):
-            doctype_regexp = r'(?P<name>[^\s]*)( PUBLIC "(?P<publicId>.*)" "(?P<systemId1>.*)"| SYSTEM "(?P<systemId2>.*)")?'
+            doctype_regexp = r'DOCTYPE\s+(?P<name>[^\s]*)( PUBLIC "(?P<publicId>.*)" "(?P<systemId1>.*)"| SYSTEM "(?P<systemId2>.*)")?'
             m = re.compile(doctype_regexp).match(element.string)
             assert m is not None, "DOCTYPE did not match expected format"
             name = m.group('name')
@@ -217,7 +225,7 @@ def testSerializer(element):
         else:
             rv.append("|%s<%s>"%(' '*indent, element.name))
             if element.attrs:
-                for name, value in element.attrs:
+                for name, value in sorted(element.attrs):
                     rv.append('|%s%s="%s"' % (' '*(indent+2), name, value))
         indent += 2
         if hasattr(element, "contents"):

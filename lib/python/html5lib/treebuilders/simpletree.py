@@ -31,6 +31,7 @@ class Node(_base.Node):
         return tree
 
     def appendChild(self, node):
+        assert isinstance(node, Node)
         if (isinstance(node, TextNode) and self.childNodes and
           isinstance(self.childNodes[-1], TextNode)):
             self.childNodes[-1].value += node.value
@@ -39,6 +40,7 @@ class Node(_base.Node):
         node.parent = self
 
     def insertText(self, data, insertBefore=None):
+        assert isinstance(data, unicode), "data %s is of type %s expected unicode"%(repr(data), type(data))
         if insertBefore is None:
             self.appendChild(TextNode(data))
         else:
@@ -81,8 +83,11 @@ class Document(Node):
     def __init__(self):
         Node.__init__(self, None)
 
-    def __unicode__(self):
+    def __str__(self):
         return "#document"
+
+    def __unicode__(self):
+        return str(self)
 
     def appendChild(self, child):
         Node.appendChild(self, child)
@@ -110,8 +115,11 @@ class Document(Node):
 
 class DocumentFragment(Document):
     type = 2
-    def __unicode__(self):
+    def __str__(self):
         return "#document-fragment"
+
+    def __unicode__(self):
+        return str(self)
 
     def cloneNode(self):
         return DocumentFragment()
@@ -203,7 +211,7 @@ class Element(Node):
         tree = '\n|%s%s' % (' '*indent, unicode(self))
         indent += 2
         if self.attributes:
-            for name, value in self.attributes.iteritems():
+            for name, value in sorted(self.attributes.iteritems()):
                 if isinstance(name, tuple):
                     name = "%s %s"%(name[0], name[1])
                 tree += '\n|%s%s="%s"' % (' ' * indent, name, value)

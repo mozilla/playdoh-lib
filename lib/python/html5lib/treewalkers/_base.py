@@ -15,11 +15,15 @@ class TreeWalker(object):
         return {"type": "SerializeError", "data": msg}
 
     def normalizeAttrs(self, attrs):
-        if not attrs:
-            attrs = []
-        elif hasattr(attrs, 'items'):
-            attrs = attrs.items()
-        return [(unicode(name),unicode(value)) for name,value in attrs]
+        newattrs = {}
+        if attrs:
+            #TODO: treewalkers should always have attrs
+            for (namespace,name),value in attrs.iteritems():
+                namespace = unicode(namespace) if namespace else None
+                name = unicode(name)
+                value = unicode(value)
+                newattrs[(namespace,name)] = value
+        return newattrs
 
     def emptyTag(self, namespace, name, attrs, hasChildren=False):
         yield {"type": "EmptyTag", "name": unicode(name), 
@@ -38,7 +42,7 @@ class TreeWalker(object):
         return {"type": "EndTag", 
                 "name": unicode(name),
                 "namespace":unicode(namespace),
-                "data": []}
+                "data": {}}
 
     def text(self, data):
         data = unicode(data)
@@ -63,6 +67,9 @@ class TreeWalker(object):
                 "publicId": publicId,
                 "systemId": systemId,
                 "correct": correct}
+
+    def entity(self, name):
+        return {"type": "Entity", "name": unicode(name)}
 
     def unknown(self, nodeType):
         return self.error(_("Unknown node type: ") + nodeType)
@@ -89,6 +96,7 @@ DOCTYPE = Node.DOCUMENT_TYPE_NODE
 TEXT = Node.TEXT_NODE
 ELEMENT = Node.ELEMENT_NODE
 COMMENT = Node.COMMENT_NODE
+ENTITY = Node.ENTITY_NODE
 UNKNOWN = "<#UNKNOWN#>"
 
 class NonRecursiveTreeWalker(TreeWalker):
@@ -132,6 +140,9 @@ class NonRecursiveTreeWalker(TreeWalker):
 
             elif type == COMMENT:
                 yield self.comment(details[0])
+
+            elif type == ENTITY:
+                yield self.entity(details[0])
 
             elif type == DOCUMENT:
                 hasChildren = True

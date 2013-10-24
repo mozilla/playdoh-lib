@@ -6,9 +6,9 @@ except NameError:
     from sets import Set as set
     from sets import ImmutableSet as frozenset
 
-# The scope markers are inserted when entering buttons, object elements,
+# The scope markers are inserted when entering object elements,
 # marquees, table cells, and table captions, and are used to prevent formatting
-# from "leaking" into tables, buttons, object elements, and marquees.
+# from "leaking" into tables, object elements, and marquees.
 Marker = None
 
 class Node(object):
@@ -86,6 +86,29 @@ class Node(object):
         """
         raise NotImplementedError
 
+class ActiveFormattingElements(list):
+    def append(self, node):
+        equalCount = 0
+        if node != Marker:
+            for element in self[::-1]:
+                if element == Marker:
+                    break
+                if self.nodesEqual(element, node):
+                    equalCount += 1
+                if equalCount == 3:
+                    self.remove(element)
+                    break
+        list.append(self, node)
+
+    def nodesEqual(self, node1, node2):
+        if not node1.nameTuple == node2.nameTuple:
+            return False
+        
+        if not node1.attributes == node2.attributes:
+            return False
+        
+        return True
+
 class TreeBuilder(object):
     """Base treebuilder implementation
     documentClass - the class to use for the bottommost node of a document
@@ -118,7 +141,7 @@ class TreeBuilder(object):
     
     def reset(self):
         self.openElements = []
-        self.activeFormattingElements = []
+        self.activeFormattingElements = ActiveFormattingElements()
 
         #XXX - rename these to headElement, formElement
         self.headPointer = None
@@ -129,20 +152,28 @@ class TreeBuilder(object):
         self.document = self.documentClass()
 
     def elementInScope(self, target, variant=None):
-        # Exit early when possible.
+
+        #If we pass a node in we match that. if we pass a string
+        #match any node with that name
+        exactNode = hasattr(target, "nameTuple")
+
         listElementsMap = {
-            None:scopingElements,
-            "list":scopingElements | set([(namespaces["html"], "ol"),
-                                          (namespaces["html"], "ul")]),
-            "table":set([(namespaces["html"], "html"),
-                         (namespaces["html"], "table")])
+            None:(scopingElements, False),
+            "button":(scopingElements | set([(namespaces["html"], "button")]), False),
+            "list":(scopingElements | set([(namespaces["html"], "ol"),
+                                           (namespaces["html"], "ul")]), False),
+            "table":(set([(namespaces["html"], "html"),
+                          (namespaces["html"], "table")]), False),
+            "select":(set([(namespaces["html"], "optgroup"), 
+                           (namespaces["html"], "option")]), True)
             }
-        listElements = listElementsMap[variant]
+        listElements, invert = listElementsMap[variant]
 
         for node in reversed(self.openElements):
-            if node.name == target:
+            if (node.name == target and not exactNode or
+                node == target and exactNode):
                 return True
-            elif node.nameTuple in listElements:
+            elif (invert ^ (node.nameTuple in listElements)):                
                 return False
 
         assert False # We should never reach this point
@@ -254,6 +285,7 @@ class TreeBuilder(object):
         
     def insertElementNormal(self, token):
         name = token["name"]
+        assert type(name) == unicode, "Element %s not unicode"%name
         namespace = token.get("namespace", self.defaultNamespace)
         element = self.elementClass(name, namespace)
         element.attributes = token["data"]
@@ -321,7 +353,7 @@ class TreeBuilder(object):
     def generateImpliedEndTags(self, exclude=None):
         name = self.openElements[-1].name
         # XXX td, th and tr are not actually needed
-        if (name in frozenset(("dd", "dt", "li", "p", "td", "th", "tr"))
+        if (name in frozenset(("dd", "dt", "li", "option", "optgroup", "p", "rp", "rt"))
             and name != exclude):
             self.openElements.pop()
             # XXX This is not entirely what the specification says. We should

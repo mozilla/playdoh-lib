@@ -96,6 +96,9 @@ class FragmentWrapper(object):
     def __str__(self):
         return str(self.obj)
 
+    def __unicode__(self):
+        return unicode(self.obj)
+
     def __len__(self):
         return len(self.obj)
 
@@ -126,6 +129,9 @@ class TreeWalker(_base.NonRecursiveTreeWalker):
         elif node.tag == etree.Comment:
             return _base.COMMENT, node.text
 
+        elif node.tag == etree.Entity:
+            return _base.ENTITY, node.text[1:-1] # strip &;
+
         else:
             #This is assumed to be an ordinary element
             match = tag_regexp.match(node.tag)
@@ -134,10 +140,15 @@ class TreeWalker(_base.NonRecursiveTreeWalker):
             else:
                 namespace = None
                 tag = node.tag
+            attrs = {}
+            for name, value in node.attrib.items():
+                match = tag_regexp.match(name)
+                if match:
+                    attrs[(match.group(1),match.group(2))] = value
+                else:
+                    attrs[(None,name)] = value
             return (_base.ELEMENT, namespace, self.filter.fromXmlName(tag), 
-                    [(self.filter.fromXmlName(name), value) for 
-                     name,value in node.attrib.iteritems()], 
-                     len(node) > 0 or node.text)
+                    attrs, len(node) > 0 or node.text)
 
     def getFirstChild(self, node):
         assert not isinstance(node, tuple), _("Text nodes have no children")
