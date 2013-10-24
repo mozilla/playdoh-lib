@@ -1,7 +1,10 @@
 import gettext
 _ = gettext.gettext
 
-import new
+try:
+    from types import ModuleType
+except:
+    from new import module as ModuleType
 import copy
 import re
 
@@ -17,7 +20,7 @@ def getETreeModule(ElementTreeImplementation):
     if name in moduleCache:
         return moduleCache[name]
     else:
-        mod = new.module("_" + ElementTreeImplementation.__name__+"builder")
+        mod = ModuleType("_" + ElementTreeImplementation.__name__+"builder")
         objs = getETreeBuilder(ElementTreeImplementation)
         mod.__dict__.update(objs)
         moduleCache[name] = mod
@@ -58,10 +61,11 @@ def getETreeBuilder(ElementTreeImplementation):
                 return (_base.DOCTYPE, node.text, 
                         node.get("publicId"), node.get("systemId"))
 
-            elif type(node.tag) == type(ElementTree.Comment):
+            elif node.tag == ElementTree.Comment:
                 return _base.COMMENT, node.text
 
             else:
+                assert type(node.tag) in (str, unicode), type(node.tag)
                 #This is assumed to be an ordinary element
                 match = tag_regexp.match(node.tag)
                 if match:
@@ -69,8 +73,15 @@ def getETreeBuilder(ElementTreeImplementation):
                 else:
                     namespace = None
                     tag = node.tag
+                attrs = {}
+                for name, value in node.attrib.items():
+                    match = tag_regexp.match(name)
+                    if match:
+                        attrs[(match.group(1),match.group(2))] = value
+                    else:
+                        attrs[(None,name)] = value
                 return (_base.ELEMENT, namespace, tag, 
-                        node.attrib.items(), len(node) or node.text)
+                        attrs, len(node) or node.text)
     
         def getFirstChild(self, node):
             if isinstance(node, tuple):

@@ -5,6 +5,7 @@ import sys
 
 from constants import EOF, spaceCharacters, asciiLetters, asciiUppercase
 from constants import encodings, ReparseException
+import utils
 
 #Non-unicode versions of constants for use in the pre-parser
 spaceCharactersBytes = frozenset([str(item) for item in spaceCharacters])
@@ -133,8 +134,10 @@ class HTMLInputStream:
         #Craziness
         if len(u"\U0010FFFF") == 1:
             self.reportCharacterErrors = self.characterErrorsUCS4
+            self.replaceCharactersRegexp = re.compile(u"[\uD800-\uDFFF]")
         else:
             self.reportCharacterErrors = self.characterErrorsUCS2
+            self.replaceCharactersRegexp = re.compile(u"([\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])")
 
         # List of where new lines occur
         self.newLines = [0]
@@ -175,8 +178,8 @@ class HTMLInputStream:
         # number of columns in the last line of the previous chunk
         self.prevNumCols = 0
         
-        #Flag to indicate we may have a CR LF broken across a data chunk
-        self._lastChunkEndsWithCR = False
+        #Deal with CR LF and surrogates split over chunk boundaries
+        self._bufferedCharacter = None
 
     def openStream(self, source):
         """Produces a file object from source.
@@ -192,8 +195,12 @@ class HTMLInputStream:
             if isinstance(source, unicode):
                 source = source.encode('utf-8')
                 self.charEncoding = ("utf-8", "certain")
-            import cStringIO
-            stream = cStringIO.StringIO(str(source))
+            try:
+                from io import BytesIO
+            except:
+                # 2to3 converts this line to: from io import StringIO  
+                from cStringIO import StringIO as BytesIO
+            stream = BytesIO(source)
 
         if (not(hasattr(stream, "tell") and hasattr(stream, "seek")) or
             stream is sys.stdin):
@@ -341,20 +348,27 @@ class HTMLInputStream:
         self.chunkOffset = 0
 
         data = self.dataStream.read(chunkSize)
-
-        if not data:
+        
+        #Deal with CR LF and surrogates broken across chunks
+        if self._bufferedCharacter:
+            data = self._bufferedCharacter + data
+            self._bufferedCharacter = None
+        elif not data:
+            # We have no more data, bye-bye stream
             return False
         
+        if len(data) > 1:
+            lastv = ord(data[-1])
+            if lastv == 0x0D or 0xD800 <= lastv <= 0xDBFF:
+                self._bufferedCharacter = data[-1]
+                data = data[:-1]
+        
         self.reportCharacterErrors(data)
-
-        data = data.replace(u"\u0000", u"\ufffd")
-        #Check for CR LF broken across chunks
-        if (self._lastChunkEndsWithCR and data[0] == u"\n"):
-            data = data[1:]
-            # Stop if the chunk is now empty
-            if not data:
-                return False
-        self._lastChunkEndsWithCR = data[-1] == u"\r"
+        
+        # Replace invalid characters
+        # Note U+0000 is dealt with in the tokenizer
+        data = self.replaceCharactersRegexp.sub(u"\ufffd", data)
+                    
         data = data.replace(u"\r\n", u"\n")
         data = data.replace(u"\r", u"\n")
 
@@ -364,16 +378,12 @@ class HTMLInputStream:
         return True
 
     def characterErrorsUCS4(self, data):
-        for i in xrange(data.count(u"\u0000")):
-            self.errors.append("null-character")
         for i in xrange(len(invalid_unicode_re.findall(data))):
             self.errors.append("invalid-codepoint")
 
     def characterErrorsUCS2(self, data):
         #Someone picked the wrong compile option
         #You lose
-        for i in xrange(data.count(u"\u0000")):
-            self.errors.append("null-character")
         skip = False
         import sys
         for match in invalid_unicode_re.finditer(data):
@@ -382,14 +392,9 @@ class HTMLInputStream:
             codepoint = ord(match.group())
             pos = match.start()
             #Pretty sure there should be endianness issues here
-            if (codepoint >= 0xD800 and codepoint <= 0xDBFF and
-                pos < len(data) - 1 and
-                ord(data[pos + 1]) >= 0xDC00 and
-                ord(data[pos + 1]) <= 0xDFFF):
+            if utils.isSurrogatePair(data[pos:pos+2]):
                 #We have a surrogate pair!
-                #From a perl manpage
-                char_val = (0x10000 + (codepoint - 0xD800) * 0x400 + 
-                            (ord(data[pos + 1]) - 0xDC00))
+                char_val = utils.surrogatePairToCodepoint(data[pos:pos+2])
                 if char_val in non_bmp_invalid_codepoints:
                     self.errors.append("invalid-codepoint")
                 skip = True
@@ -399,8 +404,6 @@ class HTMLInputStream:
             else:
                 skip = False
                 self.errors.append("invalid-codepoint")
-        #This is still wrong if it is possible for a surrogate pair to break a
-        #chunk boundary
 
     def charsUntil(self, characters, opposite = False):
         """ Returns a string of characters from the stream up to but not
@@ -449,24 +452,9 @@ class HTMLInputStream:
         r = u"".join(rv)
         return r
 
-    def charsUntilEOF(self):
-        """ Returns a string of characters from the stream up to EOF."""
-
-        rv = []
-
-        while True:
-            rv.append(self.chunk[self.chunkOffset:])
-            if not self.readChunk():
-                # Reached EOF
-                break
-
-        r = u"".join(rv)
-        return r
-
     def unget(self, char):
         # Only one character is allowed to be ungotten at once - it must
         # be consumed again before any further call to unget
-
         if char is not None:
             if self.chunkOffset == 0:
                 # unget is called quite rarely, so it's a good idea to do
