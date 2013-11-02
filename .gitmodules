@@ -13,9 +13,6 @@
 [submodule "src/jingo-minify"]
 	path = src/jingo-minify
 	url = git://github.com/jsocol/jingo-minify.git
-[submodule "src/schematic"]
-	path = src/schematic
-	url = git://github.com/jbalogh/schematic.git
 [submodule "src/django-nose"]
 	path = src/django-nose
 	url = git://github.com/jbalogh/django-nose.git
