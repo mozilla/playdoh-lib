@@ -1,0 +1,2 @@
+requests>=1.0.0
+fancy_tag==0.2.0
