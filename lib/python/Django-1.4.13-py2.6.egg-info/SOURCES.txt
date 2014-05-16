@@ -3715,6 +3715,9 @@ docs/releases/1.4-alpha-1.txt
 docs/releases/1.4-beta-1.txt
 docs/releases/1.4.1.txt
 docs/releases/1.4.10.txt
+docs/releases/1.4.11.txt
+docs/releases/1.4.12.txt
+docs/releases/1.4.13.txt
 docs/releases/1.4.2.txt
 docs/releases/1.4.3.txt
 docs/releases/1.4.4.txt
@@ -4774,6 +4777,7 @@ tests/regressiontests/urlpatterns_reverse/models.py
 tests/regressiontests/urlpatterns_reverse/named_urls.py
 tests/regressiontests/urlpatterns_reverse/namespace_urls.py
 tests/regressiontests/urlpatterns_reverse/no_urls.py
+tests/regressiontests/urlpatterns_reverse/nonimported_module.py
 tests/regressiontests/urlpatterns_reverse/reverse_lazy_urls.py
 tests/regressiontests/urlpatterns_reverse/tests.py
 tests/regressiontests/urlpatterns_reverse/urlconf_inner.py
