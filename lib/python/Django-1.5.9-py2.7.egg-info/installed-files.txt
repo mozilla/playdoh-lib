@@ -138,6 +138,7 @@
 ../django/contrib/__init__.py
 ../django/contrib/admin/__init__.py
 ../django/contrib/admin/actions.py
+../django/contrib/admin/exceptions.py
 ../django/contrib/admin/filters.py
 ../django/contrib/admin/forms.py
 ../django/contrib/admin/helpers.py
@@ -3707,6 +3708,7 @@
 ../django/contrib/__init__.pyc
 ../django/contrib/admin/__init__.pyc
 ../django/contrib/admin/actions.pyc
+../django/contrib/admin/exceptions.pyc
 ../django/contrib/admin/filters.pyc
 ../django/contrib/admin/forms.pyc
 ../django/contrib/admin/helpers.pyc
