@@ -300,6 +300,7 @@ django/conf/urls/static.py
 django/contrib/__init__.py
 django/contrib/admin/__init__.py
 django/contrib/admin/actions.py
+django/contrib/admin/exceptions.py
 django/contrib/admin/filters.py
 django/contrib/admin/forms.py
 django/contrib/admin/helpers.py
@@ -3718,6 +3719,7 @@ docs/releases/1.4.10.txt
 docs/releases/1.4.11.txt
 docs/releases/1.4.12.txt
 docs/releases/1.4.13.txt
+docs/releases/1.4.14.txt
 docs/releases/1.4.2.txt
 docs/releases/1.4.3.txt
 docs/releases/1.4.4.txt
@@ -4879,6 +4881,7 @@ tests/requirements/base.txt
 tests/requirements/mysql.txt
 tests/requirements/oracle.txt
 tests/requirements/postgres.txt
+tests/requirements/py2.txt
 tests/templates/404.html
 tests/templates/500.html
 tests/templates/base.html
