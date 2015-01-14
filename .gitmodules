@@ -52,3 +52,6 @@
 [submodule "src/django-appconf"]
 	path = src/django-appconf
 	url = git://github.com/jezdez/django-appconf.git
+[submodule "src/django"]
+	path = src/django
+	url = git://github.com/django/django.git

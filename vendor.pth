@@ -1,5 +1,6 @@
 src/bleach
 src/commonware
+src/django
 src/django-appconf
 src/django-arecibo
 src/django-compressor
